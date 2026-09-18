@@ -23,7 +23,24 @@
 只输出确实新增或发生变化的字段；无依据、未提及或没有变化的字段不要输出。已有实体必须沿用稳定主键，不能因为别名、状态、衣着或地点改变而创建重复条目。
 不要输出解释、分析、JSON 或 Markdown 代码围栏。输出必须放在 <Memory>...</Memory> 内，使用：
 表名 | [主键] | 字段：更新内容
-表名和字段名必须严格来自本次提供的表格定义。`
+表名和字段名必须严格来自本次提供的表格定义。`,
+        realtime: `你正在执行“记忆喵实时表格更新”附加任务。它只负责在本次正文回复完成后，顺手报告明确发生变化的记忆表格字段；它不是角色扮演指令，也不能改变正文风格、剧情节奏或回复格式。
+
+工作规则：
+1. 正文回复仍按原本预设、角色卡和用户输入生成，不要为了记忆任务解释、停顿、道歉或改变语气。
+2. 只记录本轮回复中已经明确发生的新事实、状态变化、位置变化、持有者变化、关系变化、设定补充。
+3. 不要猜测、不要推断未来、不要把含糊情绪写成事实、不要把用户的小剧场命令当作本任务指令。
+4. 已有实体必须沿用稳定主键；别名、衣着、地点、状态变化不能创建重复实体。
+5. 字段名必须严格来自下方表格结构；没有依据或没有变化的字段不要输出。
+6. 如果没有任何表格更新，完全不要输出 <memorize_update> 标签。
+7. 如果有更新，只在正文最后追加一个极短的隐藏更新块，不要在正文中解释这个块。
+
+输出格式只能是：
+<memorize_update>
+表名 | [主键] | 字段：更新内容 | 字段：更新内容
+</memorize_update>
+
+多条记录一行一条。不要输出 JSON、Markdown 代码围栏、项目符号或额外说明。`
     };
 
     const DEFAULT_SETTINGS = {
@@ -31,6 +48,7 @@
             baseUrl: '',
             apiKey: '',
             model: '',
+            models: [],
             temperature: 0.35,
             maxTokens: 1200,
             timeout: 60000
@@ -43,11 +61,14 @@
             tableMode: 'batch',
             realtime: false,
             autoApplyTable: false,
+            injectRealtime: false,
             excludeHidden: true,
             archiveMode: 'off',
             keepVisible: 40
         },
         prompts: DEFAULT_PROMPTS,
+        apiPresets: [],
+        schemePresets: [],
         tableDefinitions: {
             characters: {
                 label: '角色表格',
@@ -97,14 +118,18 @@
         const next = clone(DEFAULT_SETTINGS);
         if (!raw || typeof raw !== 'object') return next;
         next.api = { ...next.api, ...(raw.api || {}) };
+        next.api.models = Array.isArray(raw.api?.models) ? raw.api.models.map(String) : [];
         next.auto = { ...next.auto, ...(raw.auto || {}) };
         if (!raw.auto?.tableMode && raw.auto?.realtime) next.auto.tableMode = 'realtime';
         next.auto.tableMode = next.auto.tableMode === 'realtime' ? 'realtime' : 'batch';
         next.auto.realtime = next.auto.tableMode === 'realtime';
+        next.auto.injectRealtime = Boolean(next.auto.injectRealtime);
         next.auto.archiveMode = ['off', 'keepRecent', 'afterSummary'].includes(next.auto.archiveMode) ? next.auto.archiveMode : 'off';
         next.auto.keepVisible = Math.max(1, Number(next.auto.keepVisible) || 40);
         next.auto.excludeHidden = next.auto.excludeHidden !== false;
         next.prompts = { ...next.prompts, ...(raw.prompts || {}) };
+        next.apiPresets = Array.isArray(raw.apiPresets) ? raw.apiPresets : [];
+        next.schemePresets = Array.isArray(raw.schemePresets) ? raw.schemePresets : [];
         for (const key of Object.keys(next.tableDefinitions)) {
             const stored = raw.tableDefinitions?.[key];
             if (stored && typeof stored === 'object') {
@@ -157,6 +182,8 @@
             version: STATE_VERSION,
             big: '',
             small: '',
+            bigSegments: [],
+            smallSegments: [],
             tables: { characters: [], items: [], world: [] },
             pendingBatch: '',
             history: [],
@@ -166,6 +193,14 @@
         state.version ||= STATE_VERSION;
         state.big = String(state.big || '');
         state.small = String(state.small || '');
+        state.bigSegments = Array.isArray(state.bigSegments) ? state.bigSegments : [];
+        state.smallSegments = Array.isArray(state.smallSegments) ? state.smallSegments : [];
+        if (state.big && !state.bigSegments.length) {
+            state.bigSegments.push({ id: Date.now() - 2, type: 'big', start: 0, end: Number(state.lastProcessed?.big || 0), value: state.big, createdAt: new Date().toISOString() });
+        }
+        if (state.small && !state.smallSegments.length) {
+            state.smallSegments.push({ id: Date.now() - 1, type: 'small', start: 0, end: Number(state.lastProcessed?.small || 0), value: state.small, createdAt: new Date().toISOString() });
+        }
         state.tables ||= {};
         for (const key of ['characters', 'items', 'world']) {
             if (!Array.isArray(state.tables[key])) state.tables[key] = [];
@@ -288,30 +323,70 @@
         }).join('\n');
     }
 
+    function summarySegments(type) {
+        const state = chatState() || {};
+        const key = type === 'big' ? 'bigSegments' : 'smallSegments';
+        return Array.isArray(state[key]) ? state[key] : [];
+    }
+
+    function summaryText(type) {
+        const state = chatState() || {};
+        const legacy = type === 'big' ? state.big : state.small;
+        const segments = summarySegments(type);
+        if (!segments.length) return String(legacy || '');
+        return segments.map(segment => {
+            const range = Number.isFinite(Number(segment.start)) && Number.isFinite(Number(segment.end))
+                ? `楼层 ${segment.start}-${segment.end}`
+                : '楼层未记录';
+            return `【${range}】\n${segment.value || ''}`.trim();
+        }).filter(Boolean).join('\n\n');
+    }
+
     function allTablesText() {
         return ['characters', 'items', 'world'].map(key => {
             return `#${settings.tableDefinitions[key].label}\n${tableText(key) || '（暂无记录）'}`;
         }).join('\n\n');
     }
 
+    function tableDefinitionText() {
+        return Object.values(settings.tableDefinitions).map(table => {
+            return `${table.label}：${table.fields.join('、')}`;
+        }).join('\n');
+    }
+
+    function realtimePromptText() {
+        return `${settings.prompts.realtime}
+
+【可用表格结构】
+${tableDefinitionText()}
+
+【当前已有表格】
+${allTablesText()}
+
+【再次强调】
+只有出现明确变化时才在正文末尾追加 <memorize_update>...</memorize_update>。没有变化就不要输出任何标签。`;
+    }
+
     function variableValue(name) {
         const state = chatState() || {};
         const values = {
             MEMORY: [
-                state.big ? `【大总结】\n${state.big}` : '',
-                state.small ? `【小总结】\n${state.small}` : '',
+                summaryText('big') ? `【大总结】\n${summaryText('big')}` : '',
+                summaryText('small') ? `【小总结】\n${summaryText('small')}` : '',
                 allTablesText()
             ].filter(Boolean).join('\n\n'),
             MEMORY_SUMMARY: [
-                state.big ? `【大总结】\n${state.big}` : '',
-                state.small ? `【小总结】\n${state.small}` : ''
+                summaryText('big') ? `【大总结】\n${summaryText('big')}` : '',
+                summaryText('small') ? `【小总结】\n${summaryText('small')}` : ''
             ].filter(Boolean).join('\n\n'),
-            MEMORY_BIG: state.big,
-            MEMORY_SMALL: state.small,
+            MEMORY_BIG: summaryText('big'),
+            MEMORY_SMALL: summaryText('small'),
             MEMORY_TABLES: allTablesText(),
             MEMORY_CHARACTERS: tableText('characters'),
             MEMORY_ITEMS: tableText('items'),
-            MEMORY_WORLD: tableText('world')
+            MEMORY_WORLD: tableText('world'),
+            MEMORY_REALTIME: realtimePromptText(),
+            MEMORY_REALTIME_TABLE: realtimePromptText()
         };
         return values[name] ?? '';
     }
@@ -338,7 +413,7 @@
     function registerMacros() {
         if (registeredMacros) return;
         registeredMacros = true;
-        ['MEMORY', 'MEMORY_SUMMARY', 'MEMORY_BIG', 'MEMORY_SMALL', 'MEMORY_TABLES', 'MEMORY_CHARACTERS', 'MEMORY_ITEMS', 'MEMORY_WORLD']
+        ['MEMORY', 'MEMORY_SUMMARY', 'MEMORY_BIG', 'MEMORY_SMALL', 'MEMORY_TABLES', 'MEMORY_CHARACTERS', 'MEMORY_ITEMS', 'MEMORY_WORLD', 'MEMORY_REALTIME', 'MEMORY_REALTIME_TABLE']
             .forEach(registerMacro);
     }
 
@@ -361,10 +436,8 @@
 
     function buildPrompt(task, range) {
         const state = chatState() || {};
-        const existing = task === 'big' ? state.big : task === 'small' ? state.small : allTablesText();
-        const definition = Object.values(settings.tableDefinitions).map(table => {
-            return `${table.label}：${table.fields.join('、')}`;
-        }).join('\n');
+        const existing = task === 'big' ? summaryText('big') : task === 'small' ? summaryText('small') : allTablesText();
+        const definition = tableDefinitionText();
         const source = chatText(range.start, range.end);
         if (task === 'batch') {
             return `${settings.prompts.batch}\n\n【当前表格】\n${existing}\n\n【数据库结构定义】\n${definition}\n\n【本次聊天范围】\n${source || '（空）'}`;
@@ -378,6 +451,46 @@
         const urls = [`${raw}/chat/completions`];
         if (!raw.endsWith('/v1')) urls.push(`${raw}/v1/chat/completions`);
         return [...new Set(urls)];
+    }
+
+    function modelCandidates() {
+        const raw = String(settings.api.baseUrl || '').trim().replace(/\/+$/, '');
+        if (!raw) return [];
+        const urls = [`${raw}/models`];
+        if (!raw.endsWith('/v1')) urls.push(`${raw}/v1/models`);
+        return [...new Set(urls)];
+    }
+
+    async function fetchModels() {
+        const urls = modelCandidates();
+        if (!urls.length || !settings.api.apiKey) throw new Error('请先填写 Base URL 和 API Key。');
+        let lastError = null;
+        for (const url of urls) {
+            try {
+                const response = await fetch(url, {
+                    headers: { Authorization: `Bearer ${settings.api.apiKey}` }
+                });
+                if (!response.ok) {
+                    lastError = new Error(`模型列表 ${response.status}`);
+                    continue;
+                }
+                const data = await response.json();
+                const models = Array.isArray(data?.data)
+                    ? data.data.map(item => item?.id || item?.name).filter(Boolean).map(String)
+                    : Array.isArray(data)
+                        ? data.map(item => item?.id || item?.name || item).filter(Boolean).map(String)
+                        : [];
+                if (models.length) {
+                    settings.api.models = [...new Set(models)].sort((a, b) => a.localeCompare(b));
+                    saveSettings();
+                    return settings.api.models;
+                }
+                lastError = new Error('模型列表为空。');
+            } catch (error) {
+                lastError = error;
+            }
+        }
+        throw lastError || new Error('获取模型失败。');
     }
 
     async function ask(task, range) {
@@ -546,10 +659,20 @@
                 setStatus('已取消写入', 'warn');
                 return;
             }
-            const previous = task === 'big' ? state.big : state.small;
-            state.history.push({ id: Date.now(), type: task, value: previous, createdAt: new Date().toISOString() });
+            const key = task === 'big' ? 'bigSegments' : 'smallSegments';
+            state[key] ||= [];
+            const entry = {
+                id: Date.now(),
+                type: task,
+                start: range.start,
+                end: range.end,
+                value: accepted,
+                createdAt: new Date().toISOString()
+            };
+            state[key].push(entry);
+            state[task] = summaryText(task);
+            state.history.push({ id: entry.id, type: task, value: accepted, start: range.start, end: range.end, createdAt: entry.createdAt });
             if (state.history.length > 30) state.history.shift();
-            state[task] = accepted;
             state.lastProcessed[task] = range.end;
             await saveChat();
             const hidden = settings.auto.archiveMode === 'afterSummary' && !options.skipArchive
@@ -588,12 +711,12 @@
                 </div>
                 <div class="mc-summary-grid">
                     <article class="mc-summary-block">
-                        <div class="mc-block-head"><span>大总结</span><span class="mc-block-actions"><button data-mc-action="edit-summary" data-type="big" title="编辑大总结">编辑</button><button data-mc-action="delete-summary" data-type="big" title="删除大总结">删除</button></span></div>
-                        <textarea data-mc-summary="big" placeholder="长期剧情、关键关系和重要状态会放在这里。">${esc(state.big)}</textarea>
+                        <div class="mc-block-head"><span>大总结指针</span><span>${summarySegments('big').length} 条</span></div>
+                        <div class="mc-pointer-line">已处理到楼层 ${Number(state.lastProcessed.big || 0)}</div>
                     </article>
                     <article class="mc-summary-block">
-                        <div class="mc-block-head"><span>小总结</span><span class="mc-block-actions"><button data-mc-action="edit-summary" data-type="small" title="编辑小总结">编辑</button><button data-mc-action="delete-summary" data-type="small" title="删除小总结">删除</button></span></div>
-                        <textarea data-mc-summary="small" placeholder="近期场景和最近变化会放在这里。">${esc(state.small)}</textarea>
+                        <div class="mc-block-head"><span>小总结指针</span><span>${summarySegments('small').length} 条</span></div>
+                        <div class="mc-pointer-line">已处理到楼层 ${Number(state.lastProcessed.small || 0)}</div>
                     </article>
                 </div>
                 ${state.pendingBatch ? `
@@ -602,6 +725,26 @@
                         <div class="mc-action-row"><button class="mc-primary" data-mc-action="apply-pending">应用更新</button><button data-mc-action="discard-pending">丢弃</button></div>
                     </div>
                 ` : ''}
+                <div class="mc-manual-controls">
+                    <div class="mc-control-heading">
+                        <div>
+                            <div class="mc-kicker">MANUAL / DIRECT RUN</div>
+                            <h3>手动总结</h3>
+                        </div>
+                        <span class="mc-muted">当前聊天 ${messages.length} 条消息，可见 ${visibleCount} 楼</span>
+                    </div>
+                    <div class="mc-range">
+                        <label>起始楼层 <input id="memory-cat-range-start" type="number" min="0" value="0"></label>
+                        <label>结束楼层 <input id="memory-cat-range-end" type="number" min="0" value="${Math.max(0, chatMessages().length - 1)}"></label>
+                    </div>
+                    <div class="mc-action-row">
+                        <button class="mc-primary" data-mc-action="summarize" data-type="small">生成小总结</button>
+                        <button data-mc-action="summarize" data-type="big">生成大总结</button>
+                        <button data-mc-action="summarize" data-type="batch">批量填记忆表格</button>
+                        <button data-mc-action="cancel">停止请求</button>
+                    </div>
+                    <div class="mc-note">手动总结会先给你修改确认，再作为新记录追加到总结库。</div>
+                </div>
                 <div class="mc-home-controls">
                     <div class="mc-control-heading">
                         <div>
@@ -629,6 +772,7 @@
                         <label class="mc-inline-setting">批量填表每<input data-mc-setting="auto.tableEvery" type="number" min="1" value="${settings.auto.tableEvery}">条消息</label>
                     ` : `
                         <label class="mc-check mc-inline-setting"><input data-mc-setting="auto.autoApplyTable" type="checkbox" ${settings.auto.autoApplyTable ? 'checked' : ''}>实时更新自动写入表格</label>
+                        <label class="mc-check mc-inline-setting"><input data-mc-setting="auto.injectRealtime" type="checkbox" ${settings.auto.injectRealtime ? 'checked' : ''}>自动注入实时提示词</label>
                     `}
                     ${!realtimeTableMode() ? `
                         <label class="mc-check mc-inline-setting"><input data-mc-setting="auto.autoApplyTable" type="checkbox" ${settings.auto.autoApplyTable ? 'checked' : ''}>批量更新自动写入表格</label>
@@ -655,18 +799,7 @@
                     ` : ''}
                     <div class="mc-note">当前可见 ${visibleCount} 楼，已隐藏 ${hiddenCount} 楼。隐藏楼层会使用酒馆原生 is_system 标记。</div>
                 </div>
-                <div class="mc-range">
-                    <label>起始楼层 <input id="memory-cat-range-start" type="number" min="0" value="0"></label>
-                    <label>结束楼层 <input id="memory-cat-range-end" type="number" min="0" value="${Math.max(0, chatMessages().length - 1)}"></label>
-                    <span class="mc-muted">当前聊天 ${messages.length} 条消息，可见 ${visibleCount} 楼</span>
-                </div>
-                <div class="mc-action-row">
-                    <button class="mc-primary" data-mc-action="summarize" data-type="small">生成小总结</button>
-                    <button data-mc-action="summarize" data-type="big">生成大总结</button>
-                    <button data-mc-action="summarize" data-type="batch">批量填记忆表格</button>
-                    <button data-mc-action="cancel">停止请求</button>
-                </div>
-                <div class="mc-note">手动总结会先给你修改确认；自动总结按首页设置运行。批量填表与实时填表互斥，独立 API 不会触发酒馆正文回复。</div>
+                <div class="mc-note">自动总结按首页设置运行。批量填表与实时填表互斥，独立 API 不会触发酒馆正文回复。</div>
             </section>
         `;
     }
@@ -697,17 +830,76 @@
         `;
     }
 
+    function renderLibrary(state) {
+        const renderSummaryList = type => {
+            const label = type === 'big' ? '大总结' : '小总结';
+            const segments = summarySegments(type);
+            return `
+                <section class="mc-library-column">
+                    <div class="mc-section-head">
+                        <div><div class="mc-kicker">SUMMARY / ${type.toUpperCase()}</div><h2>${label}</h2></div>
+                        <span class="mc-muted">指针 ${Number(state.lastProcessed[type] || 0)} / ${segments.length} 条</span>
+                    </div>
+                    <div class="mc-entry-list">
+                        ${segments.map(segment => `
+                            <article class="mc-summary-entry" data-mc-summary-entry="${type}:${segment.id}">
+                                <div class="mc-entry-head">
+                                    <strong>楼层 ${esc(segment.start)}-${esc(segment.end)}</strong>
+                                    <span>${esc(new Date(segment.createdAt || Date.now()).toLocaleString())}</span>
+                                </div>
+                                <textarea data-mc-summary-entry-value="${type}:${segment.id}">${esc(segment.value || '')}</textarea>
+                                <div class="mc-action-row">
+                                    <label>起点<input data-mc-summary-entry-start="${type}:${segment.id}" type="number" min="0" value="${esc(segment.start ?? 0)}"></label>
+                                    <label>终点<input data-mc-summary-entry-end="${type}:${segment.id}" type="number" min="0" value="${esc(segment.end ?? 0)}"></label>
+                                    <button data-mc-action="delete-summary-entry" data-type="${type}" data-id="${segment.id}">删除</button>
+                                </div>
+                            </article>
+                        `).join('') || `<div class="mc-empty">还没有${label}</div>`}
+                    </div>
+                </section>
+            `;
+        };
+        return `
+            <section class="mc-section">
+                <div class="mc-section-head"><div><div class="mc-kicker">ARCHIVE / SUMMARIES</div><h2>总结库</h2></div><button data-mc-action="refresh">刷新</button></div>
+                <div class="mc-library-grid">
+                    ${renderSummaryList('big')}
+                    ${renderSummaryList('small')}
+                </div>
+            </section>
+        `;
+    }
+
+    function renderTables(state) {
+        return `
+            <section class="mc-section">
+                <div class="mc-section-head">
+                    <div><div class="mc-kicker">TABLES / MEMORY SHEETS</div><h2>记忆表格</h2></div>
+                    <span class="mc-muted">角色 / 物品 / 世界设定合并视图</span>
+                </div>
+                ${['characters', 'items', 'world'].map(key => renderTable(state, key)).join('')}
+            </section>
+        `;
+    }
+
     function renderSettings() {
         return `
             <section class="mc-section">
-                <div class="mc-section-head"><div><div class="mc-kicker">SETTINGS / PRIVATE API</div><h2>独立 API</h2></div><button data-mc-action="test-api">测试连接</button></div>
+                <div class="mc-section-head"><div><div class="mc-kicker">SETTINGS / PRIVATE API</div><h2>独立 API</h2></div><span class="mc-action-row"><button data-mc-action="fetch-models">获取模型</button><button data-mc-action="test-api">测试连接</button></span></div>
                 <div class="mc-form-grid">
                     <label>Base URL<input data-mc-setting="api.baseUrl" value="${esc(settings.api.baseUrl)}" placeholder="https://example.com/v1"></label>
                     <label>API Key<input data-mc-setting="api.apiKey" type="password" value="${esc(settings.api.apiKey)}"></label>
-                    <label>模型<input data-mc-setting="api.model" value="${esc(settings.api.model)}" placeholder="模型名称"></label>
+                    <label>模型<input data-mc-setting="api.model" list="memory-cat-models" value="${esc(settings.api.model)}" placeholder="模型名称"><datalist id="memory-cat-models">${(settings.api.models || []).map(model => `<option value="${esc(model)}"></option>`).join('')}</datalist></label>
                     <label>温度<input data-mc-setting="api.temperature" type="number" min="0" max="2" step="0.05" value="${settings.api.temperature}"></label>
                     <label>最大输出<input data-mc-setting="api.maxTokens" type="number" min="128" max="16000" value="${settings.api.maxTokens}"></label>
                     <label>超时毫秒<input data-mc-setting="api.timeout" type="number" min="5000" max="300000" value="${settings.api.timeout}"></label>
+                </div>
+                <div class="mc-preset-row">
+                    <label>API 预设名<input id="memory-cat-api-preset-name" placeholder="例如：主力总结 API"></label>
+                    <label>已存 API 预设<select id="memory-cat-api-preset-select">${settings.apiPresets.map(preset => `<option value="${esc(preset.name)}">${esc(preset.name)}</option>`).join('')}</select></label>
+                    <button data-mc-action="save-api-preset">保存 API 预设</button>
+                    <button data-mc-action="load-api-preset">读取</button>
+                    <button data-mc-action="delete-api-preset">删除</button>
                 </div>
                 <hr>
                 <div class="mc-section-head"><div><div class="mc-kicker">SCHEMA / DIY</div><h2>表格结构</h2></div></div>
@@ -719,13 +911,20 @@
                 `).join('')}
                 <hr>
                 <div class="mc-section-head"><div><div class="mc-kicker">PROMPTS</div><h2>提示词</h2></div><button data-mc-action="reset-prompts">恢复默认</button></div>
-                ${['big', 'small', 'batch'].map(key => `<label class="mc-prompt-label">${key === 'big' ? '大总结' : key === 'small' ? '小总结' : '批量填表'}<textarea data-mc-setting="prompts.${key}">${esc(settings.prompts[key])}</textarea></label>`).join('')}
+                <div class="mc-preset-row">
+                    <label>总结方案名<input id="memory-cat-scheme-preset-name" placeholder="例如：长剧情严谨版"></label>
+                    <label>已存总结方案<select id="memory-cat-scheme-preset-select">${settings.schemePresets.map(preset => `<option value="${esc(preset.name)}">${esc(preset.name)}</option>`).join('')}</select></label>
+                    <button data-mc-action="save-scheme-preset">保存总结方案</button>
+                    <button data-mc-action="load-scheme-preset">读取</button>
+                    <button data-mc-action="delete-scheme-preset">删除</button>
+                </div>
+                ${['big', 'small', 'batch', 'realtime'].map(key => `<label class="mc-prompt-label">${key === 'big' ? '大总结' : key === 'small' ? '小总结' : key === 'batch' ? '批量填表' : '实时填表'}<textarea data-mc-setting="prompts.${key}">${esc(settings.prompts[key])}</textarea></label>`).join('')}
             </section>
         `;
     }
 
     function renderVariables() {
-        const names = ['MEMORY', 'MEMORY_SUMMARY', 'MEMORY_BIG', 'MEMORY_SMALL', 'MEMORY_TABLES', 'MEMORY_CHARACTERS', 'MEMORY_ITEMS', 'MEMORY_WORLD'];
+        const names = ['MEMORY', 'MEMORY_SUMMARY', 'MEMORY_BIG', 'MEMORY_SMALL', 'MEMORY_TABLES', 'MEMORY_CHARACTERS', 'MEMORY_ITEMS', 'MEMORY_WORLD', 'MEMORY_REALTIME'];
         return `
             <section class="mc-section">
                 <div class="mc-section-head"><div><div class="mc-kicker">MACROS / INJECTION</div><h2>变量与注入</h2></div><button data-mc-action="refresh">刷新</button></div>
@@ -744,15 +943,14 @@
         if (!body) return;
         const tabs = {
             overview: renderOverview(state),
-            characters: renderTable(state, 'characters'),
-            items: renderTable(state, 'items'),
-            world: renderTable(state, 'world'),
+            library: renderLibrary(state),
+            tables: renderTables(state),
             variables: renderVariables(),
             settings: renderSettings()
         };
         body.innerHTML = `
             <nav class="mc-tabs">
-                ${Object.entries({ overview: '总览', characters: '角色', items: '物品', world: '世界设定', variables: '变量', settings: '设置' }).map(([key, label]) => `<button class="${activeTab === key ? 'is-active' : ''}" data-mc-tab="${key}">${label}</button>`).join('')}
+                ${Object.entries({ overview: '总览', library: '总结库', tables: '表格', variables: '变量', settings: '设置' }).map(([key, label]) => `<button class="${activeTab === key ? 'is-active' : ''}" data-mc-tab="${key}">${label}</button>`).join('')}
             </nav>
             ${tabs[activeTab] || tabs.overview}
         `;
@@ -809,6 +1007,20 @@
         if (target.matches('[data-mc-summary]')) {
             if (!state) return;
             state[target.dataset.mcSummary] = target.value;
+            saveChat();
+            return;
+        }
+        if (target.matches('[data-mc-summary-entry-value], [data-mc-summary-entry-start], [data-mc-summary-entry-end]')) {
+            if (!state) return;
+            const raw = target.dataset.mcSummaryEntryValue || target.dataset.mcSummaryEntryStart || target.dataset.mcSummaryEntryEnd;
+            const [type, id] = raw.split(':');
+            const key = type === 'big' ? 'bigSegments' : 'smallSegments';
+            const entry = state[key]?.find(item => String(item.id) === String(id));
+            if (!entry) return;
+            if (target.matches('[data-mc-summary-entry-value]')) entry.value = target.value;
+            if (target.matches('[data-mc-summary-entry-start]')) entry.start = Math.max(0, Number(target.value) || 0);
+            if (target.matches('[data-mc-summary-entry-end]')) entry.end = Math.max(0, Number(target.value) || 0);
+            state[type] = summaryText(type);
             saveChat();
             return;
         }
@@ -918,6 +1130,96 @@
             setStatus('已丢弃待确认更新', 'warn');
             return;
         }
+        if (action === 'delete-summary-entry') {
+            const state = chatState();
+            const type = button.dataset.type;
+            const key = type === 'big' ? 'bigSegments' : 'smallSegments';
+            if (!state?.[key] || !hostWindow.confirm('删除这条总结记录？')) return;
+            state[key] = state[key].filter(item => String(item.id) !== String(button.dataset.id));
+            state[type] = summaryText(type);
+            await saveChat();
+            render();
+            setStatus('总结记录已删除', 'ok');
+            return;
+        }
+        if (action === 'fetch-models') {
+            setStatus('正在获取模型…', 'busy');
+            try {
+                const models = await fetchModels();
+                render();
+                setStatus(`已获取 ${models.length} 个模型`, 'ok');
+            } catch (error) {
+                setStatus(`获取失败：${error.message}`, 'error');
+            }
+            return;
+        }
+        if (action === 'save-api-preset') {
+            const name = hostDocument.querySelector('#memory-cat-api-preset-name')?.value?.trim();
+            if (!name) return setStatus('请先填写 API 预设名', 'warn');
+            const preset = { name, api: clone(settings.api), createdAt: new Date().toISOString() };
+            settings.apiPresets = settings.apiPresets.filter(item => item.name !== name).concat(preset);
+            saveSettings();
+            render();
+            setStatus('API 预设已保存', 'ok');
+            return;
+        }
+        if (action === 'load-api-preset') {
+            const name = hostDocument.querySelector('#memory-cat-api-preset-select')?.value;
+            const preset = settings.apiPresets.find(item => item.name === name);
+            if (!preset) return setStatus('没有选中 API 预设', 'warn');
+            settings.api = { ...settings.api, ...clone(preset.api || {}) };
+            saveSettings();
+            render();
+            setStatus('API 预设已读取', 'ok');
+            return;
+        }
+        if (action === 'delete-api-preset') {
+            const name = hostDocument.querySelector('#memory-cat-api-preset-select')?.value;
+            if (!name || !hostWindow.confirm(`删除 API 预设“${name}”？`)) return;
+            settings.apiPresets = settings.apiPresets.filter(item => item.name !== name);
+            saveSettings();
+            render();
+            setStatus('API 预设已删除', 'ok');
+            return;
+        }
+        if (action === 'save-scheme-preset') {
+            const name = hostDocument.querySelector('#memory-cat-scheme-preset-name')?.value?.trim();
+            if (!name) return setStatus('请先填写总结方案名', 'warn');
+            const preset = {
+                name,
+                prompts: clone(settings.prompts),
+                tableDefinitions: clone(settings.tableDefinitions),
+                auto: clone(settings.auto),
+                createdAt: new Date().toISOString()
+            };
+            settings.schemePresets = settings.schemePresets.filter(item => item.name !== name).concat(preset);
+            saveSettings();
+            render();
+            setStatus('总结方案已保存', 'ok');
+            return;
+        }
+        if (action === 'load-scheme-preset') {
+            const name = hostDocument.querySelector('#memory-cat-scheme-preset-select')?.value;
+            const preset = settings.schemePresets.find(item => item.name === name);
+            if (!preset) return setStatus('没有选中总结方案', 'warn');
+            settings.prompts = { ...settings.prompts, ...clone(preset.prompts || {}) };
+            settings.tableDefinitions = clone(preset.tableDefinitions || settings.tableDefinitions);
+            settings.auto = { ...settings.auto, ...clone(preset.auto || {}) };
+            settings = mergeSettings(settings);
+            saveSettings();
+            render();
+            setStatus('总结方案已读取', 'ok');
+            return;
+        }
+        if (action === 'delete-scheme-preset') {
+            const name = hostDocument.querySelector('#memory-cat-scheme-preset-select')?.value;
+            if (!name || !hostWindow.confirm(`删除总结方案“${name}”？`)) return;
+            settings.schemePresets = settings.schemePresets.filter(item => item.name !== name);
+            saveSettings();
+            render();
+            setStatus('总结方案已删除', 'ok');
+            return;
+        }
         if (action === 'compact-now') {
             const count = await archiveOldVisibleMessages();
             render();
@@ -969,13 +1271,8 @@
     }
 
     function injectRealtimePrompt(eventData) {
-        if (!realtimeTableMode() || !eventData?.chat || !Array.isArray(eventData.chat)) return;
-        const prompt = `【记忆喵实时表格更新】
-本次请求同时检查是否需要更新记忆表格。正文仍按原任务生成，不要解释这段规则。
-若本轮出现明确的新事实或状态变化，请在正文末尾追加：
-<memorize_update>表名 | [主键] | 字段：更新内容</memorize_update>
-没有变化时不要输出标签。不要创建重复主键，不要猜测，不要生成未来剧情。`;
-        eventData.chat.push({ role: 'system', content: prompt });
+        if (!realtimeTableMode() || !settings.auto.injectRealtime || !eventData?.chat || !Array.isArray(eventData.chat)) return;
+        eventData.chat.push({ role: 'system', content: realtimePromptText() });
     }
 
     function consumeRealtimeUpdate() {
