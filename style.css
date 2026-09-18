@@ -405,6 +405,84 @@
     border-bottom: 1px solid var(--mc-heavy-line);
 }
 
+#memory-cat-drawer .mc-log-panel {
+    border-top: 1px solid var(--mc-heavy-line);
+}
+
+#memory-cat-drawer .mc-log-list {
+    display: grid;
+    gap: 0;
+    border-top: 1px solid var(--mc-line);
+    border-bottom: 1px solid var(--mc-line);
+}
+
+#memory-cat-drawer .mc-log-row {
+    display: grid;
+    grid-template-columns: 72px 1fr;
+    gap: 10px;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--mc-line);
+    font-family: Arial, "Noto Sans SC", sans-serif;
+}
+
+#memory-cat-drawer .mc-log-row:last-child {
+    border-bottom: 0;
+}
+
+#memory-cat-drawer .mc-log-row span {
+    color: var(--mc-soft-ink);
+    font-size: 0.68rem;
+    letter-spacing: 0.06em;
+}
+
+#memory-cat-drawer .mc-log-row p {
+    margin: 0;
+    color: var(--mc-ink);
+    font-size: 0.72rem;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+}
+
+#memory-cat-drawer .mc-request-list {
+    display: grid;
+    gap: 10px;
+}
+
+#memory-cat-drawer .mc-request-row {
+    border-top: 1px solid var(--mc-line);
+    font-family: Arial, "Noto Sans SC", sans-serif;
+}
+
+#memory-cat-drawer .mc-request-row summary {
+    display: grid;
+    grid-template-columns: minmax(110px, 1fr) auto auto auto;
+    gap: 10px;
+    align-items: center;
+    padding: 9px 0;
+    cursor: pointer;
+    color: var(--mc-ink);
+    font-size: 0.72rem;
+}
+
+#memory-cat-drawer .mc-request-row summary em {
+    color: var(--mc-soft-ink);
+    font-style: normal;
+}
+
+#memory-cat-drawer .mc-request-row pre {
+    max-height: 360px;
+    margin: 0 0 10px;
+    padding: 10px;
+    overflow: auto;
+    border: 1px solid var(--mc-line);
+    background: var(--mc-white);
+    color: var(--mc-ink);
+    font-family: Consolas, "Courier New", monospace;
+    font-size: 0.68rem;
+    line-height: 1.45;
+    white-space: pre-wrap;
+}
+
 #memory-cat-drawer .mc-manual-controls {
     margin: 18px 0 2px;
     padding: 16px 0 14px;
