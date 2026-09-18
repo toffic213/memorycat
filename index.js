@@ -114,7 +114,6 @@
             injectRealtime: false,
             trimMemoryBlocks: true,
             hideMemoryBlocks: true,
-            debugLog: true,
             confirmBeforeRun: true,
             confirmBeforeWrite: true,
             rollbackBranchWrites: true,
@@ -140,6 +139,16 @@
                 label: '世界设定',
                 aliases: ['世界设定补充'],
                 fields: ['主键', '类型', '详细说明', '详细解释', '影响范围', '相关角色', '相关地点', '备注']
+            },
+            mainlines: {
+                label: '主线',
+                aliases: ['主线表', '主线表格', '主线剧情', '剧情主线', '主线任务', '主线任务表', '主线进度'],
+                fields: ['主键', '主线名称', '相关人物', '核心事件', '时间', '因果', '影响', '当前状态', '是否完成', '下一步', '备注']
+            },
+            branches: {
+                label: '支线',
+                aliases: ['支线表', '支线表格', '支线剧情', '剧情支线', '支线任务', '支线任务表', '支线进度'],
+                fields: ['主键', '支线名称', '相关人物', '核心事件', '时间', '因果', '影响', '当前状态', '是否完成', '下一步', '备注']
             }
         }
     };
@@ -151,8 +160,11 @@
     let registeredMacros = false;
     let autoBusy = false;
     let tavernRegex = null;
+    let realtimeScanTimer = null;
+    let tavernScriptPromise = null;
 
     const clone = value => JSON.parse(JSON.stringify(value));
+    const tableKeys = () => Object.keys(settings?.tableDefinitions || DEFAULT_SETTINGS.tableDefinitions);
 
     function getContext() {
         try {
@@ -197,7 +209,6 @@
         next.auto.injectRealtime = Boolean(next.auto.injectRealtime);
         next.auto.trimMemoryBlocks = next.auto.trimMemoryBlocks !== false;
         next.auto.hideMemoryBlocks = next.auto.hideMemoryBlocks !== false;
-        next.auto.debugLog = next.auto.debugLog !== false;
         next.auto.confirmBeforeRun = next.auto.confirmBeforeRun !== false;
         next.auto.confirmBeforeWrite = next.auto.confirmBeforeWrite !== false;
         next.auto.rollbackBranchWrites = next.auto.rollbackBranchWrites !== false;
@@ -298,10 +309,9 @@
             small: '',
             bigSegments: [],
             smallSegments: [],
-            tables: { characters: [], items: [], world: [] },
+            tables: { characters: [], items: [], world: [], mainlines: [], branches: [] },
             pendingBatch: '',
             history: [],
-            logs: [],
             requestLogs: [],
             tableWrites: [],
             lastProcessed: { big: 0, small: 0, table: 0 }
@@ -319,12 +329,11 @@
             state.smallSegments.push({ id: Date.now() - 1, type: 'small', start: 0, end: Number(state.lastProcessed?.small || 0), value: state.small, createdAt: new Date().toISOString() });
         }
         state.tables ||= {};
-        for (const key of ['characters', 'items', 'world']) {
+        for (const key of tableKeys()) {
             if (!Array.isArray(state.tables[key])) state.tables[key] = [];
         }
         state.pendingBatch = String(state.pendingBatch || '');
         state.history = Array.isArray(state.history) ? state.history : [];
-        state.logs = Array.isArray(state.logs) ? state.logs : [];
         state.requestLogs = Array.isArray(state.requestLogs) ? state.requestLogs : [];
         state.tableWrites = Array.isArray(state.tableWrites) ? state.tableWrites : [];
         state.lastProcessed = { big: 0, small: 0, table: 0, ...(state.lastProcessed || {}) };
@@ -366,19 +375,7 @@
     }
 
     function addLog(message, kind = 'info') {
-        if (!settings?.auto?.debugLog) return;
-        const state = chatState();
-        if (!state) return;
-        state.logs ||= [];
-        state.logs.push({
-            id: Date.now() + Math.random(),
-            at: new Date().toLocaleTimeString(),
-            kind,
-            message: String(message || '')
-        });
-        if (state.logs.length > 60) state.logs.splice(0, state.logs.length - 60);
-        saveChat();
-        if (mounted && activeTab === 'overview') render();
+        console.debug(`[${PLUGIN_ID}] ${kind}: ${message}`);
     }
 
     function addRequestLog(task, range, body) {
@@ -405,6 +402,58 @@
         if (typeof message.content === 'string') message.content = cleaned.value;
         addLog(`${reason}：楼层 ${index} 隐藏记忆块，移除 ${cleaned.removed} 字符`, 'trim');
         return cleaned.removed;
+    }
+
+    async function tavernScript() {
+        if (!tavernScriptPromise) {
+            tavernScriptPromise = import('/script.js').catch(error => {
+                console.warn(`[${PLUGIN_ID}] script import failed`, error);
+                return {};
+            });
+        }
+        return tavernScriptPromise;
+    }
+
+    async function refreshMessageDisplay(message, index) {
+        if (!message || !Number.isFinite(Number(index))) return;
+        const ctx = getContext();
+        const module = await tavernScript();
+        const sync = ctx?.syncMesToSwipe || hostWindow.syncMesToSwipe || module.syncMesToSwipe;
+        const update = ctx?.updateMessageBlock || hostWindow.updateMessageBlock || module.updateMessageBlock;
+        try {
+            if (typeof sync === 'function') sync(Number(index));
+        } catch (error) {
+            console.warn(`[${PLUGIN_ID}] syncMesToSwipe failed`, error);
+        }
+        try {
+            if (typeof update === 'function') {
+                update(Number(index), message);
+            } else {
+                const block = hostDocument.querySelector(`.mes[mesid="${index}"] .mes_text`);
+                if (block) block.textContent = messageText(message);
+            }
+        } catch (error) {
+            console.warn(`[${PLUGIN_ID}] updateMessageBlock failed`, error);
+        }
+        try {
+            const source = getEventSource();
+            const types = getEventTypes();
+            await source?.emit?.(types.MESSAGE_UPDATED || 'message_updated', Number(index));
+        } catch {
+            // Some event emitters are sync-only or unavailable during reload.
+        }
+    }
+
+    async function replaceMessageText(message, index, value, reason) {
+        const next = String(value || '').trim();
+        if (typeof message.mes === 'string') message.mes = next;
+        if (typeof message.content === 'string') message.content = next;
+        if (message.extra && typeof message.extra.display_text === 'string') message.extra.display_text = next;
+        if (Array.isArray(message.swipes) && Number.isInteger(message.swipe_id) && typeof message.swipes[message.swipe_id] === 'string') {
+            message.swipes[message.swipe_id] = next;
+        }
+        addLog(`${reason}：楼层 ${index} 已刷新正文显示`, 'trim');
+        await refreshMessageDisplay(message, index);
     }
 
     function processedMessageText(message, index, total) {
@@ -560,14 +609,19 @@
     }
 
     function allTablesText() {
-        return ['characters', 'items', 'world'].map(key => {
+        return tableKeys().map(key => {
             return `#${settings.tableDefinitions[key].label}\n${tableText(key) || '（暂无记录）'}`;
         }).join('\n\n');
     }
 
     function tableDefinitionText() {
-        return Object.values(settings.tableDefinitions).map(table => {
-            return `${table.label}：${table.fields.join('、')}`;
+        return Object.entries(settings.tableDefinitions).map(([key, table]) => {
+            const hint = key === 'mainlines'
+                ? '；主线只记录贯穿全局的核心脉络：相关人物、核心事件、时间、因果、影响、当前状态、是否完成和下一步。不要拆成过细任务卡'
+                : key === 'branches'
+                    ? '；支线只记录局部脉络：相关人物、核心事件、时间、因果、影响、当前状态、是否完成和下一步。不要记录碎片化小事'
+                    : '';
+            return `${table.label}：${table.fields.join('、')}${hint}`;
         }).join('\n');
     }
 
@@ -592,6 +646,10 @@ ${allTablesText()}
 [物品名称]|物品位置：当前位置|持有者：持有者姓名|状态：完好/损坏/丢失|备注：剧情依据
 #世界设定
 [设定词条名]|类型：组织/地点/规则/事件|详细说明：已确认设定内容|影响范围：影响到的人物、区域或剧情范围
+#主线
+[主线主键]|主线名称：主线标题|相关人物：牵涉人物|核心事件：发生了什么|时间：发生时间/顺序/楼层线索|因果：为什么发生、由什么导致|影响：对人物、关系或世界的影响|当前状态：未开始/进行中/暂停/受阻/完成|是否完成：是/否|下一步：后续明确方向
+#支线
+[支线主键]|支线名称：支线标题|相关人物：牵涉人物|核心事件：发生了什么|时间：发生时间/顺序/楼层线索|因果：为什么发生、由什么导致|影响：对人物、关系或后续剧情的影响|当前状态：未开始/进行中/暂停/受阻/完成|是否完成：是/否|下一步：后续明确方向
 --></Memory>
 只写本轮确实需要新增或更新的行，不要输出空字段，不要把范例内容当作事实。`;
     }
@@ -614,6 +672,8 @@ ${allTablesText()}
             MEMORY_CHARACTERS: tableText('characters'),
             MEMORY_ITEMS: tableText('items'),
             MEMORY_WORLD: tableText('world'),
+            MEMORY_MAINLINES: tableText('mainlines'),
+            MEMORY_BRANCHES: tableText('branches'),
             MEMORY_REALTIME: realtimePromptText(),
             MEMORY_REALTIME_TABLE: realtimePromptText()
         };
@@ -642,8 +702,31 @@ ${allTablesText()}
     function registerMacros() {
         if (registeredMacros) return;
         registeredMacros = true;
-        ['MEMORY', 'MEMORY_SUMMARY', 'MEMORY_BIG', 'MEMORY_SMALL', 'MEMORY_TABLES', 'MEMORY_CHARACTERS', 'MEMORY_ITEMS', 'MEMORY_WORLD', 'MEMORY_REALTIME', 'MEMORY_REALTIME_TABLE']
+        ['MEMORY', 'MEMORY_SUMMARY', 'MEMORY_BIG', 'MEMORY_SMALL', 'MEMORY_TABLES', 'MEMORY_CHARACTERS', 'MEMORY_ITEMS', 'MEMORY_WORLD', 'MEMORY_MAINLINES', 'MEMORY_BRANCHES', 'MEMORY_REALTIME', 'MEMORY_REALTIME_TABLE']
             .forEach(registerMacro);
+    }
+
+    function refreshMacros() {
+        const ctx = getContext();
+        const candidates = [
+            [ctx, ctx?.unregisterMacro],
+            [hostWindow, hostWindow.unregisterMacro],
+            [hostWindow.MacrosParser, hostWindow.MacrosParser?.unregisterMacro],
+            [hostWindow.macros?.registry, hostWindow.macros?.registry?.unregisterMacro]
+        ];
+        const [owner, unregister] = candidates.find(([, fn]) => typeof fn === 'function') || [];
+        if (typeof unregister === 'function') {
+            ['MEMORY', 'MEMORY_SUMMARY', 'MEMORY_BIG', 'MEMORY_SMALL', 'MEMORY_TABLES', 'MEMORY_CHARACTERS', 'MEMORY_ITEMS', 'MEMORY_WORLD', 'MEMORY_MAINLINES', 'MEMORY_BRANCHES', 'MEMORY_REALTIME', 'MEMORY_REALTIME_TABLE']
+                .forEach(name => {
+                    try {
+                        unregister.call(owner || hostWindow, name);
+                    } catch {
+                        // The macro may not be registered in this engine.
+                    }
+                });
+        }
+        registeredMacros = false;
+        registerMacros();
     }
 
     function setStatus(value, kind = '') {
@@ -667,9 +750,10 @@ ${allTablesText()}
         const state = chatState() || {};
         const existing = task === 'big' ? summaryText('big') : task === 'small' ? summaryText('small') : allTablesText();
         const definition = tableDefinitionText();
+        const plotGuide = '主线/支线填表补充：只记录能帮助后续续写的剧情脉络，不要拆成很细的任务卡。主线用于贯穿全局的大脉络，支线用于局部事件或人物小脉络。每条重点说清：相关人物、核心事件、时间、因果、影响、当前状态、是否完成、下一步。当前状态建议写未开始/进行中/暂停/受阻/完成；是否完成只写是/否。若事件结束、任务失败、线索关闭或关系后果明确，必须同步更新当前状态和是否完成。字段为空且本次出现可靠信息时补上；已有字段本次没有变化不要重复。输出可用：#主线\\n[主线主键]|主线名称：...|相关人物：...|核心事件：...|时间：...|因果：...|影响：...|当前状态：进行中|是否完成：否|下一步：...；或 #支线\\n[支线主键]|支线名称：...|相关人物：...|核心事件：...|时间：...|因果：...|影响：...|当前状态：受阻|是否完成：否|下一步：...。';
         const source = chatText(range.start, range.end);
         if (task === 'batch') {
-            return `${settings.prompts.batch}\n\n【当前表格】\n${existing}\n\n【数据库结构定义】\n${definition}\n\n【本次聊天范围】\n${source || '（空）'}`;
+            return `${settings.prompts.batch}\n\n【主线与支线规则】\n${plotGuide}\n\n【当前表格】\n${existing}\n\n【数据库结构定义】\n${definition}\n\n【本次聊天范围】\n${source || '（空）'}`;
         }
         return `${settings.prompts[task]}\n\n【已有${task === 'big' ? '大' : '小'}总结】\n${existing || '（暂无）'}\n\n【本次聊天范围】\n${source || '（空）'}`;
     }
@@ -788,7 +872,9 @@ ${allTablesText()}
         const fixedAliases = {
             characters: ['角色档案', '角色表格', '角色'],
             items: ['物品', '物品表格'],
-            world: ['世界设定', '世界设定补充']
+            world: ['世界设定', '世界设定补充'],
+            mainlines: ['主线', '主线表', '主线表格', '主线剧情', '剧情主线', '主线任务', '主线任务表', '主线进度'],
+            branches: ['支线', '支线表', '支线表格', '支线剧情', '剧情支线', '支线任务', '支线任务表', '支线进度']
         };
         const tableNames = Object.entries(settings.tableDefinitions).flatMap(([key, definition]) => {
             const names = [key, definition.label, ...(definition.aliases || []), ...(fixedAliases[key] || [])].filter(Boolean).map(String);
@@ -805,7 +891,68 @@ ${allTablesText()}
             const fieldAliases = {
                 characters: { 生理: '生理状态' },
                 items: { 物品位置: '当前位置', 持有者: '当前持有者' },
-                world: { 详细说明: '详细解释' }
+                world: { 详细说明: '详细解释' },
+                mainlines: {
+                    名称: '主线名称',
+                    标题: '主线名称',
+                    角色: '相关人物',
+                    人物: '相关人物',
+                    关键角色: '相关人物',
+                    关键人物: '相关人物',
+                    涉及角色: '相关人物',
+                    事件: '核心事件',
+                    已发生事项: '核心事件',
+                    已发生: '核心事件',
+                    目标: '核心事件',
+                    核心目标: '核心事件',
+                    时间线: '时间',
+                    顺序: '时间',
+                    起因: '因果',
+                    原因: '因果',
+                    后果: '影响',
+                    结果影响: '影响',
+                    状态: '当前状态',
+                    进行状态: '当前状态',
+                    推进状态: '当前状态',
+                    当前阶段: '当前状态',
+                    完成: '是否完成',
+                    完成状态: '是否完成',
+                    是否已完成: '是否完成',
+                    进度: '当前状态',
+                    阶段: '当前状态',
+                    后续: '下一步',
+                    后续目标: '下一步'
+                },
+                branches: {
+                    名称: '支线名称',
+                    标题: '支线名称',
+                    角色: '相关人物',
+                    人物: '相关人物',
+                    相关角色: '相关人物',
+                    涉及角色: '相关人物',
+                    事件: '核心事件',
+                    已发生事项: '核心事件',
+                    已发生: '核心事件',
+                    目标: '核心事件',
+                    时间线: '时间',
+                    顺序: '时间',
+                    触发条件: '因果',
+                    来源: '因果',
+                    原因: '因果',
+                    奖励或影响: '影响',
+                    后果: '影响',
+                    状态: '当前状态',
+                    进行状态: '当前状态',
+                    推进状态: '当前状态',
+                    当前阶段: '当前状态',
+                    完成: '是否完成',
+                    完成状态: '是否完成',
+                    是否已完成: '是否完成',
+                    进度: '当前状态',
+                    阶段: '当前状态',
+                    后续: '下一步',
+                    后续目标: '下一步'
+                }
             };
             const fields = {};
             for (const field of String(rawFields).split('|')) {
@@ -883,7 +1030,7 @@ ${allTablesText()}
                 }
             }
         }
-        if (!previewOnly && write.changes.length && meta.track !== false) {
+        if (!previewOnly && write.changes.length) {
             state.tableWrites ||= [];
             state.tableWrites.push(write);
             if (state.tableWrites.length > 80) state.tableWrites.splice(0, state.tableWrites.length - 80);
@@ -911,11 +1058,12 @@ ${allTablesText()}
             source: 'manual',
             range: { end: state.lastProcessed.table }
         });
-        state.pendingBatch = '';
-        await saveChat();
-        render();
-        return preview.length;
-    }
+            state.pendingBatch = '';
+            await saveChat();
+            refreshMacros();
+            render();
+            return preview.length;
+        }
 
     async function rollbackTableWritesFrom(startIndex, reason = 'branch') {
         const state = chatState();
@@ -946,6 +1094,7 @@ ${allTablesText()}
         if (changed) {
             addLog(`分支回滚：${reason}，撤销 ${changed} 条自动表格写入`, 'rollback');
             await saveChat();
+            refreshMacros();
             if (mounted) render();
         }
         return changed;
@@ -981,6 +1130,7 @@ ${allTablesText()}
                 chatState().pendingBatch = '';
                 chatState().lastProcessed.table = range.end;
                 await saveChat();
+                refreshMacros();
                 render();
                 setStatus(`已更新 ${preview.length} 条表格记录`, 'ok');
                 return;
@@ -1009,6 +1159,7 @@ ${allTablesText()}
             if (state.history.length > 30) state.history.shift();
             state.lastProcessed[task] = range.end;
             await saveChat();
+            refreshMacros();
             const hidden = settings.auto.archiveMode === 'afterSummary' && !options.skipArchive
                 ? await hideMessageRange(range.start, range.end)
                 : 0;
@@ -1134,27 +1285,9 @@ ${allTablesText()}
                     <div class="mc-note">当前可见 ${visibleCount} 楼，已隐藏 ${hiddenCount} 楼。隐藏楼层会使用酒馆原生 is_system 标记。</div>
                     <label class="mc-check mc-inline-setting"><input data-mc-setting="auto.trimMemoryBlocks" type="checkbox" ${settings.auto.trimMemoryBlocks ? 'checked' : ''}>发送前修剪记忆表格块</label>
                     <label class="mc-check mc-inline-setting"><input data-mc-setting="auto.hideMemoryBlocks" type="checkbox" ${settings.auto.hideMemoryBlocks ? 'checked' : ''}>聊天显示中隐藏记忆表格块</label>
-                    <label class="mc-check mc-inline-setting"><input data-mc-setting="auto.debugLog" type="checkbox" ${settings.auto.debugLog ? 'checked' : ''}>记录修剪日志</label>
                     <label class="mc-check mc-inline-setting"><input data-mc-setting="auto.confirmBeforeRun" type="checkbox" ${settings.auto.confirmBeforeRun ? 'checked' : ''}>总结或填表前先询问</label>
                     <label class="mc-check mc-inline-setting"><input data-mc-setting="auto.confirmBeforeWrite" type="checkbox" ${settings.auto.confirmBeforeWrite ? 'checked' : ''}>写入总结或表格前先询问</label>
                     <label class="mc-check mc-inline-setting"><input data-mc-setting="auto.rollbackBranchWrites" type="checkbox" ${settings.auto.rollbackBranchWrites ? 'checked' : ''}>重生成或回退时撤销自动表格写入</label>
-                </div>
-                <div class="mc-home-controls mc-log-panel">
-                    <div class="mc-control-heading">
-                        <div>
-                            <div class="mc-kicker">TRACE / BUILT-IN REGEX</div>
-                            <h3>修剪日志</h3>
-                        </div>
-                        <span class="mc-action-row"><button data-mc-action="clean-memory-blocks">立即清理</button><button data-mc-action="clear-log">清空日志</button></span>
-                    </div>
-                    <div class="mc-log-list">
-                        ${(state.logs || []).slice(-12).reverse().map(item => `
-                            <div class="mc-log-row" data-kind="${esc(item.kind || 'info')}">
-                                <span>${esc(item.at || '')}</span>
-                                <p>${esc(item.message || '')}</p>
-                            </div>
-                        `).join('') || '<div class="mc-empty">还没有修剪记录</div>'}
-                    </div>
                 </div>
                 <div class="mc-home-controls mc-log-panel">
                     <div class="mc-control-heading">
@@ -1190,16 +1323,20 @@ ${allTablesText()}
             <section class="mc-section">
                 <div class="mc-section-head">
                     <div><div class="mc-kicker">TABLE / ${key.toUpperCase()}</div><h2>${esc(definition.label)}</h2></div>
-                    <button data-mc-action="add-row" data-table="${key}">新增条目</button>
+                    <div class="mc-table-toolbar">
+                        <label class="mc-select-all"><input type="checkbox" data-mc-select-all="${key}">全选</label>
+                        <button data-mc-action="delete-selected-rows" data-table="${key}">删除选中</button>
+                        <button data-mc-action="add-row" data-table="${key}">新增条目</button>
+                    </div>
                 </div>
                 <div class="mc-table-wrap">
                     <table class="mc-table">
-                        <thead><tr>${definition.fields.map(field => `<th>${esc(field)}</th>`).join('')}<th>操作</th></tr></thead>
+                        <thead><tr><th class="mc-select-cell">选</th>${definition.fields.map(field => `<th>${esc(field)}</th>`).join('')}</tr></thead>
                         <tbody>
                             ${rows.map((row, index) => `
                                 <tr data-mc-row="${key}:${index}">
-                                    ${definition.fields.map(field => `<td><input data-mc-field="${esc(field)}" value="${esc(row[field] || '')}" /></td>`).join('')}
-                                    <td class="mc-row-actions"><button data-mc-action="delete-row" data-table="${key}" data-index="${index}" title="删除条目">删除</button></td>
+                                    <td class="mc-select-cell"><input type="checkbox" data-mc-row-select="${key}:${index}"></td>
+                                    ${definition.fields.map(field => `<td><textarea class="mc-table-editor" data-mc-field="${esc(field)}" rows="3">${esc(row[field] || '')}</textarea></td>`).join('')}
                                 </tr>
                             `).join('') || `<tr><td colspan="${definition.fields.length + 1}" class="mc-empty">还没有记录</td></tr>`}
                         </tbody>
@@ -1254,9 +1391,9 @@ ${allTablesText()}
             <section class="mc-section">
                 <div class="mc-section-head">
                     <div><div class="mc-kicker">TABLES / MEMORY SHEETS</div><h2>记忆表格</h2></div>
-                    <span class="mc-muted">角色 / 物品 / 世界设定合并视图</span>
+                    <span class="mc-muted">角色 / 物品 / 世界设定 / 主线 / 支线合并视图</span>
                 </div>
-                ${['characters', 'items', 'world'].map(key => renderTable(state, key)).join('')}
+                ${tableKeys().map(key => renderTable(state, key)).join('')}
             </section>
         `;
     }
@@ -1307,7 +1444,7 @@ ${allTablesText()}
     }
 
     function renderVariables() {
-        const names = ['MEMORY', 'MEMORY_SUMMARY', 'MEMORY_BIG', 'MEMORY_SMALL', 'MEMORY_TABLES', 'MEMORY_CHARACTERS', 'MEMORY_ITEMS', 'MEMORY_WORLD', 'MEMORY_REALTIME'];
+        const names = ['MEMORY', 'MEMORY_SUMMARY', 'MEMORY_BIG', 'MEMORY_SMALL', 'MEMORY_TABLES', 'MEMORY_CHARACTERS', 'MEMORY_ITEMS', 'MEMORY_WORLD', 'MEMORY_MAINLINES', 'MEMORY_BRANCHES', 'MEMORY_REALTIME'];
         return `
             <section class="mc-section">
                 <div class="mc-section-head"><div><div class="mc-kicker">MACROS / INJECTION</div><h2>变量与注入</h2></div><button data-mc-action="refresh">刷新</button></div>
@@ -1321,7 +1458,7 @@ ${allTablesText()}
     function render() {
         const root = hostDocument.getElementById(ROOT_ID);
         if (!root) return;
-        const state = chatState() || { big: '', small: '', tables: { characters: [], items: [], world: [] } };
+        const state = chatState() || { big: '', small: '', tables: { characters: [], items: [], world: [], mainlines: [], branches: [] } };
         const body = root.querySelector('.mc-body');
         if (!body) return;
         const tabs = {
@@ -1392,6 +1529,7 @@ ${allTablesText()}
             if (!state) return;
             state[target.dataset.mcSummary] = target.value;
             saveChat();
+            refreshMacros();
             return;
         }
         if (target.matches('[data-mc-summary-entry-value], [data-mc-summary-entry-start], [data-mc-summary-entry-end]')) {
@@ -1407,6 +1545,7 @@ ${allTablesText()}
             state[type] = summaryText(type);
             syncSummaryPointer(type);
             saveChat();
+            refreshMacros();
             return;
         }
         if (target.matches('[data-mc-pointer]')) {
@@ -1415,6 +1554,7 @@ ${allTablesText()}
             if (!['big', 'small', 'table'].includes(type)) return;
             state.lastProcessed[type] = Math.max(0, Number(target.value) || 0);
             saveChat();
+            refreshMacros();
             return;
         }
         if (target.matches('[data-mc-setting]')) {
@@ -1445,6 +1585,7 @@ ${allTablesText()}
             if (!definition) return;
             definition.label = target.value.trim() || definition.label;
             saveSettings();
+            refreshMacros();
             return;
         }
         if (target.matches('[data-mc-fields]')) {
@@ -1458,6 +1599,7 @@ ${allTablesText()}
             if (!fields.includes('主键')) fields.unshift('主键');
             definition.fields = [...new Set(fields)];
             saveSettings();
+            refreshMacros();
             return;
         }
         if (target.matches('[data-mc-field]')) {
@@ -1466,6 +1608,14 @@ ${allTablesText()}
             const [table, index] = rowElement.dataset.mcRow.split(':');
             state.tables[table][Number(index)][target.dataset.mcField] = target.value;
             saveChat();
+            refreshMacros();
+            return;
+        }
+        if (target.matches('[data-mc-select-all]')) {
+            const table = target.dataset.mcSelectAll;
+            hostDocument.querySelectorAll(`[data-mc-row-select^="${table}:"]`).forEach(input => {
+                input.checked = target.checked;
+            });
         }
     }
 
@@ -1505,6 +1655,7 @@ ${allTablesText()}
             if (!state?.[type] || !hostWindow.confirm(`删除当前${label}？`)) return;
             state[type] = '';
             await saveChat();
+            refreshMacros();
             render();
             setStatus(`${label}已删除`, 'ok');
             return;
@@ -1521,15 +1672,6 @@ ${allTablesText()}
             await saveChat();
             render();
             setStatus('已丢弃待确认更新', 'warn');
-            return;
-        }
-        if (action === 'clear-log') {
-            const state = chatState();
-            if (!state) return;
-            state.logs = [];
-            await saveChat();
-            render();
-            setStatus('修剪日志已清空', 'ok');
             return;
         }
         if (action === 'clean-memory-blocks') {
@@ -1577,6 +1719,7 @@ ${allTablesText()}
             state[type] = summaryText(type);
             syncSummaryPointer(type);
             await saveChat();
+            refreshMacros();
             render();
             setStatus('总结记录已删除', 'ok');
             return;
@@ -1670,6 +1813,7 @@ ${allTablesText()}
             const fields = settings.tableDefinitions[button.dataset.table].fields;
             state.tables[button.dataset.table].push(Object.fromEntries(fields.map(field => [field, ''])));
             await saveChat();
+            refreshMacros();
             render();
             return;
         }
@@ -1678,7 +1822,27 @@ ${allTablesText()}
             if (!hostWindow.confirm('删除这条记忆记录？')) return;
             state.tables[button.dataset.table].splice(Number(button.dataset.index), 1);
             await saveChat();
+            refreshMacros();
             render();
+            return;
+        }
+        if (action === 'delete-selected-rows') {
+            const state = chatState();
+            const table = button.dataset.table;
+            const selected = [...hostDocument.querySelectorAll(`[data-mc-row-select^="${table}:"]:checked`)]
+                .map(input => Number(String(input.dataset.mcRowSelect).split(':')[1]))
+                .filter(index => Number.isInteger(index))
+                .sort((a, b) => b - a);
+            if (!selected.length) {
+                setStatus('请先勾选要删除的表格条目', 'warn');
+                return;
+            }
+            if (!hostWindow.confirm(`删除选中的 ${selected.length} 条记忆记录？`)) return;
+            for (const index of selected) state.tables[table].splice(index, 1);
+            await saveChat();
+            refreshMacros();
+            render();
+            setStatus(`已删除 ${selected.length} 条表格记录`, 'ok');
             return;
         }
         if (action === 'copy-variable') {
@@ -1754,7 +1918,9 @@ ${allTablesText()}
                 const fixedAliases = {
                     characters: ['角色档案', '角色表格', '角色'],
                     items: ['物品', '物品表格'],
-                    world: ['世界设定', '世界设定补充']
+                    world: ['世界设定', '世界设定补充'],
+                    mainlines: ['主线', '主线表', '主线表格', '主线剧情', '剧情主线', '主线任务', '主线任务表', '主线进度'],
+                    branches: ['支线', '支线表', '支线表格', '支线剧情', '剧情支线', '支线任务', '支线任务表', '支线进度']
                 };
                 const headingKey = Object.entries(settings.tableDefinitions).some(([, definition]) => {
                     const key = Object.entries(settings.tableDefinitions).find(([, item]) => item === definition)?.[0];
@@ -1783,12 +1949,12 @@ ${allTablesText()}
         const messages = chatMessages();
         const last = messages[messages.length - 1];
         if (!last || last.is_user) return;
-        await rollbackTableWritesFrom(messages.length - 1, 'same-floor-regenerate');
         const value = messageText(last);
         const update = extractRealtimeUpdate(value);
         if (!update) {
             const removed = cleanMessageObject(last, messages.length - 1, '新回复显示清理');
             if (removed) {
+                await refreshMessageDisplay(last, messages.length - 1);
                 await saveChat();
                 if (mounted) render();
             }
@@ -1798,23 +1964,23 @@ ${allTablesText()}
         if (!preview.length) {
             if (hostWindow.toastr) hostWindow.toastr.warning('记忆喵看到了实时填表片段，但格式无法写入；表格块已按设置隐藏并记入日志');
             const removed = cleanMessageObject(last, messages.length - 1, '无法写入后的显示清理');
-            if (removed) await saveChat();
+            if (removed) {
+                await refreshMessageDisplay(last, messages.length - 1);
+                await saveChat();
+            }
             return;
         }
+        await rollbackTableWritesFrom(messages.length - 1, 'same-floor-regenerate');
         if (settings.auto.autoApplyTable) {
-            if (settings.auto.confirmBeforeWrite && !hostWindow.confirm(`记忆喵发现 ${preview.length} 条实时表格更新，要写入吗？`)) {
-                addLog(`实时填表取消：楼层 ${messages.length - 1} 发现 ${preview.length} 条，但未写入`, 'write');
-                return;
-            }
             applyBatch(update.batch, false, {
                 mode: 'realtime',
                 source: 'auto',
                 range: { start: messages.length - 1, end: messages.length - 1 }
             });
-            if (typeof last.mes === 'string') last.mes = update.cleaned;
-            if (typeof last.content === 'string') last.content = update.cleaned;
+            await replaceMessageText(last, messages.length - 1, update.cleaned, '实时填表写入后清理');
             addLog(`实时填表写入：楼层 ${messages.length - 1} 写入 ${preview.length} 条，并隐藏表格块`, 'write');
             await saveChat();
+            refreshMacros();
             if (hostWindow.toastr) hostWindow.toastr.info(`记忆喵已写入 ${preview.length} 条实时表格更新`);
         } else {
             const count = await storePendingBatch(update.batch, { end: chatMessages().length - 1 });
@@ -1822,17 +1988,26 @@ ${allTablesText()}
                 if (hostWindow.toastr) hostWindow.toastr.warning('记忆喵暂存实时填表失败，已保留在正文里');
                 return;
             }
-            if (typeof last.mes === 'string') last.mes = update.cleaned;
-            if (typeof last.content === 'string') last.content = update.cleaned;
+            await replaceMessageText(last, messages.length - 1, update.cleaned, '实时填表暂存后清理');
             addLog(`实时填表暂存：楼层 ${messages.length - 1} 暂存 ${count} 条，并隐藏表格块`, 'write');
             await saveChat();
+            refreshMacros();
             if (hostWindow.toastr) hostWindow.toastr.info(`记忆喵发现 ${count} 条实时表格变更，已放入待确认区`);
         }
         if (mounted) render();
     }
 
+    function scheduleRealtimeConsume(delay = 350) {
+        if (realtimeScanTimer) hostWindow.clearTimeout(realtimeScanTimer);
+        realtimeScanTimer = hostWindow.setTimeout(async () => {
+            realtimeScanTimer = null;
+            await consumeRealtimeUpdate();
+        }, delay);
+    }
+
     async function onMessageReceived() {
         await consumeRealtimeUpdate();
+        scheduleRealtimeConsume(700);
         if (autoBusy) return;
         const state = chatState();
         const length = chatMessages().length;
@@ -1886,7 +2061,19 @@ ${allTablesText()}
         const received = types.MESSAGE_RECEIVED || 'message_received';
         const ready = types.CHAT_COMPLETION_PROMPT_READY || 'chat_completion_prompt_ready';
         const changed = types.CHAT_CHANGED || 'chat_id_changed';
+        const rendered = types.CHARACTER_MESSAGE_RENDERED || 'character_message_rendered';
+        const updated = types.MESSAGE_UPDATED || 'message_updated';
+        const edited = types.MESSAGE_EDITED || 'message_edited';
+        const swiped = types.MESSAGE_SWIPED || 'message_swiped';
+        const generationEnded = types.GENERATION_ENDED || 'generation_ended';
+        const generationStopped = types.GENERATION_STOPPED || 'generation_stopped';
         source.on(received, onMessageReceived);
+        source.on(rendered, () => scheduleRealtimeConsume(250));
+        source.on(updated, () => scheduleRealtimeConsume(250));
+        source.on(edited, () => scheduleRealtimeConsume(250));
+        source.on(swiped, () => scheduleRealtimeConsume(250));
+        source.on(generationEnded, () => scheduleRealtimeConsume(600));
+        source.on(generationStopped, () => scheduleRealtimeConsume(600));
         source.on(ready, onPromptReady);
         source.on(changed, async () => {
             await rollbackTableWritesFrom(chatMessages().length, 'chat-branch-or-reload');
