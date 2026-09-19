@@ -8,6 +8,7 @@
     const STATE_VERSION = 1;
     const hostWindow = window.parent || window;
     const hostDocument = hostWindow.document;
+    const MODAL_REGENERATE = Symbol('memory-cat-regenerate');
 
     const DEFAULT_PROMPTS = {
         header: `【记忆喵破限整理协议】
@@ -117,7 +118,7 @@
             model: '',
             models: [],
             temperature: 0.35,
-            maxTokens: 1200,
+            maxTokens: 4096,
             timeout: 60000,
             stream: true
         },
@@ -183,6 +184,8 @@
     let tavernRegex = null;
     let realtimeScanTimer = null;
     let tavernScriptPromise = null;
+    let tavernSettingsPromise = null;
+    let hydratedSettings = false;
 
     const clone = value => JSON.parse(JSON.stringify(value));
     const tableKeys = () => Object.keys(settings?.tableDefinitions || DEFAULT_SETTINGS.tableDefinitions);
@@ -218,11 +221,30 @@
         return tavernRegex;
     }
 
+    async function loadTavernSettingsApi() {
+        if (!tavernSettingsPromise) {
+            tavernSettingsPromise = Promise.all([
+                import('/scripts/extensions.js').catch(() => ({})),
+                import('/script.js').catch(() => ({}))
+            ]).then(([extensions, script]) => ({
+                extensionSettings: extensions.extension_settings,
+                saveSettingsDebounced: script.saveSettingsDebounced
+            })).catch(error => {
+                console.warn(`[${PLUGIN_ID}] settings module import failed`, error);
+                return {};
+            });
+        }
+        return tavernSettingsPromise;
+    }
+
     function mergeSettings(raw) {
         const next = clone(DEFAULT_SETTINGS);
         if (!raw || typeof raw !== 'object') return next;
         next.api = { ...next.api, ...(raw.api || {}) };
         next.api.models = Array.isArray(raw.api?.models) ? raw.api.models.map(String) : [];
+        next.api.maxTokens = Math.max(128, Number(next.api.maxTokens) || DEFAULT_SETTINGS.api.maxTokens);
+        if (!raw.api || raw.api.maxTokens === undefined || Number(raw.api.maxTokens) === 1200) next.api.maxTokens = DEFAULT_SETTINGS.api.maxTokens;
+        next.api.stream = raw.api?.stream !== false;
         next.auto = { ...next.auto, ...(raw.auto || {}) };
         if (!raw.auto?.tableMode && raw.auto?.realtime) next.auto.tableMode = 'realtime';
         next.auto.tableMode = ['off', 'batch', 'realtime'].includes(next.auto.tableMode) ? next.auto.tableMode : 'batch';
@@ -276,6 +298,16 @@
             : [];
     }
 
+    function mergePresetLists(...lists) {
+        const map = new Map();
+        for (const list of lists) {
+            for (const item of cleanPresets(list)) {
+                map.set(String(item.name).trim(), item);
+            }
+        }
+        return [...map.values()];
+    }
+
     function loadPresetStore() {
         try {
             const stored = JSON.parse(hostWindow.localStorage.getItem(PRESET_STORAGE_KEY) || 'null');
@@ -293,10 +325,11 @@
         try {
             const local = JSON.parse(hostWindow.localStorage.getItem(STORAGE_KEY) || 'null');
             const ctx = getContext();
-            const merged = mergeSettings(local || ctx?.extensionSettings?.[PLUGIN_ID] || hostWindow.extension_settings?.[PLUGIN_ID]);
+            const tavern = ctx?.extensionSettings?.[PLUGIN_ID] || hostWindow.extension_settings?.[PLUGIN_ID];
+            const merged = mergeSettings({ ...(tavern || {}), ...(local || {}) });
             const presets = loadPresetStore();
-            if (presets.apiPresets?.length) merged.apiPresets = presets.apiPresets;
-            if (presets.schemePresets?.length) merged.schemePresets = presets.schemePresets;
+            merged.apiPresets = mergePresetLists(tavern?.apiPresets, local?.apiPresets, presets.apiPresets);
+            merged.schemePresets = mergePresetLists(tavern?.schemePresets, local?.schemePresets, presets.schemePresets);
             return merged;
         } catch {
             const fallback = clone(DEFAULT_SETTINGS);
@@ -304,6 +337,20 @@
             if (presets.apiPresets?.length) fallback.apiPresets = presets.apiPresets;
             if (presets.schemePresets?.length) fallback.schemePresets = presets.schemePresets;
             return fallback;
+        }
+    }
+
+    async function persistTavernSettings(snapshot) {
+        try {
+            const ctx = getContext();
+            if (ctx?.extensionSettings) ctx.extensionSettings[PLUGIN_ID] = snapshot;
+            if (hostWindow.extension_settings) hostWindow.extension_settings[PLUGIN_ID] = snapshot;
+            const api = await loadTavernSettingsApi();
+            if (api.extensionSettings) api.extensionSettings[PLUGIN_ID] = snapshot;
+            const save = api.saveSettingsDebounced || ctx?.saveSettingsDebounced || hostWindow.saveSettingsDebounced;
+            if (typeof save === 'function') save();
+        } catch (error) {
+            console.warn(`[${PLUGIN_ID}] persistent settings save failed`, error);
         }
     }
 
@@ -327,6 +374,19 @@
         } catch (error) {
             console.warn(`[${PLUGIN_ID}] settings save failed`, error);
         }
+        persistTavernSettings(snapshot);
+    }
+
+    async function hydrateSettingsFromTavern() {
+        const api = await loadTavernSettingsApi();
+        const stored = api.extensionSettings?.[PLUGIN_ID];
+        if (!stored || typeof stored !== 'object') return;
+        const merged = mergeSettings({ ...stored, ...settings });
+        merged.apiPresets = mergePresetLists(stored.apiPresets, settings.apiPresets);
+        merged.schemePresets = mergePresetLists(stored.schemePresets, settings.schemePresets);
+        settings = merged;
+        saveSettings();
+        if (mounted) render();
     }
 
     function chatState() {
@@ -912,12 +972,24 @@ ${allTablesText()}
         throw lastError || new Error('获取模型失败。');
     }
 
+    function textFromContent(value) {
+        if (typeof value === 'string') return value;
+        if (Array.isArray(value)) {
+            return value.map(item => {
+                if (typeof item === 'string') return item;
+                return item?.text || item?.content || item?.value || '';
+            }).join('');
+        }
+        return '';
+    }
+
     function completionFromData(data) {
-        return data?.choices?.[0]?.message?.content
-            ?? data?.choices?.[0]?.text
-            ?? data?.output_text
-            ?? data?.content
-            ?? '';
+        const choice = data?.choices?.[0];
+        return textFromContent(choice?.message?.content)
+            || textFromContent(choice?.text)
+            || textFromContent(data?.output_text)
+            || textFromContent(data?.content)
+            || '';
     }
 
     async function readStreamResponse(response, keepAlive) {
@@ -926,6 +998,7 @@ ${allTablesText()}
         const decoder = new TextDecoder();
         let buffer = '';
         let result = '';
+        let finishReason = '';
         const consumeLine = line => {
             const trimmed = line.trim();
             if (!trimmed) return;
@@ -933,12 +1006,15 @@ ${allTablesText()}
             if (!payload || payload === '[DONE]') return;
             try {
                 const data = JSON.parse(payload);
-                const delta = data?.choices?.[0]?.delta?.content
-                    ?? data?.choices?.[0]?.message?.content
-                    ?? data?.choices?.[0]?.text
-                    ?? data?.delta
-                    ?? '';
-                if (typeof delta === 'string') result += delta;
+                const choice = data?.choices?.[0];
+                finishReason ||= choice?.finish_reason || '';
+                const delta = textFromContent(choice?.delta?.content)
+                    || textFromContent(choice?.message?.content)
+                    || textFromContent(choice?.text)
+                    || textFromContent(data?.delta)
+                    || textFromContent(data?.content)
+                    || textFromContent(data?.output_text);
+                if (delta) result += delta;
             } catch {
                 // Some proxies emit comments or partial keep-alive lines.
             }
@@ -954,6 +1030,7 @@ ${allTablesText()}
         }
         buffer += decoder.decode();
         if (buffer.trim()) consumeLine(buffer);
+        if (finishReason === 'length') throw new Error('模型因最大输出长度截断了内容，请调高“最大输出”或缩小楼层范围。');
         return result.trim();
     }
 
@@ -964,7 +1041,7 @@ ${allTablesText()}
                 'Content-Type': 'application/json',
                 Authorization: `Bearer ${settings.api.apiKey}`
             },
-            body: JSON.stringify(useStream ? { ...body, stream: true } : body),
+            body: JSON.stringify(useStream ? { ...body, stream: true, stream_options: { include_usage: true } } : body),
             signal: requestController.signal
         });
         keepAlive?.();
@@ -976,6 +1053,8 @@ ${allTablesText()}
             throw new Error('流式 API 返回了空内容。');
         }
         const data = await response.json();
+        const finishReason = data?.choices?.[0]?.finish_reason || '';
+        if (finishReason === 'length') throw new Error('模型因最大输出长度截断了内容，请调高“最大输出”或缩小楼层范围。');
         const result = completionFromData(data);
         if (typeof result === 'string' && result.trim()) return result.trim();
         throw new Error('API 返回了空内容。');
@@ -1275,68 +1354,79 @@ ${allTablesText()}
             setStatus('已取消本次整理', 'warn');
             return;
         }
-        setStatus(task === 'batch' ? '正在整理表格…' : '正在生成总结…', 'busy');
         try {
-            const result = await ask(task, range);
-            if (task === 'batch') {
-                const preview = applyBatch(result, true);
-                if (!preview.length) {
-                    setStatus('没有解析到可写入的表格更新', 'warn');
+            while (true) {
+                setStatus(task === 'batch' ? '正在整理表格…' : '正在生成总结…', 'busy');
+                const result = await ask(task, range);
+                if (task === 'batch') {
+                    const preview = applyBatch(result, true);
+                    if (!preview.length) {
+                        setStatus('没有解析到可写入的表格更新', 'warn');
+                        return;
+                    }
+                    if (options.auto && !settings.auto.autoApplyTable) {
+                        await storePendingBatch(result, range);
+                        setStatus(`已暂存 ${preview.length} 条表格更新`, 'ok');
+                        return;
+                    }
+                    const accepted = !settings.auto.confirmBeforeWrite || await confirmDialog(
+                        `写入 ${preview.length} 条表格记录？`,
+                        formatPreview(preview),
+                        { confirmText: '写入', regenerateText: '重新生成' }
+                    );
+                    if (accepted === MODAL_REGENERATE) {
+                        setStatus('正在重新生成表格更新…', 'busy');
+                        continue;
+                    }
+                    if (!accepted) {
+                        setStatus('已取消写入', 'warn');
+                        return;
+                    }
+                    applyBatch(result, false, { mode: 'batch', range, source: options.auto ? 'auto' : 'manual' });
+                    chatState().pendingBatch = '';
+                    chatState().lastProcessed.table = range.end;
+                    await saveChat();
+                    refreshMacros();
+                    render();
+                    setStatus(`已更新 ${preview.length} 条表格记录`, 'ok');
                     return;
                 }
-                if (options.auto && !settings.auto.autoApplyTable) {
-                    await storePendingBatch(result, range);
-                    setStatus(`已暂存 ${preview.length} 条表格更新`, 'ok');
-                    return;
+                const cleaned = extractMemory(result);
+                const state = chatState();
+                const label = task === 'big' ? '大总结' : '小总结';
+                const accepted = settings.auto.confirmBeforeWrite ? await editResult(label, cleaned, { regenerate: true }) : cleaned;
+                if (accepted === MODAL_REGENERATE) {
+                    setStatus(`正在重新生成${label}…`, 'busy');
+                    continue;
                 }
-                const accepted = !settings.auto.confirmBeforeWrite || await confirmDialog(
-                    `写入 ${preview.length} 条表格记录？`,
-                    formatPreview(preview),
-                    { confirmText: '写入' }
-                );
-                if (!accepted) {
+                if (accepted === null) {
                     setStatus('已取消写入', 'warn');
                     return;
                 }
-                applyBatch(result, false, { mode: 'batch', range, source: options.auto ? 'auto' : 'manual' });
-                chatState().pendingBatch = '';
-                chatState().lastProcessed.table = range.end;
+                const key = task === 'big' ? 'bigSegments' : 'smallSegments';
+                state[key] ||= [];
+                const entry = {
+                    id: Date.now(),
+                    type: task,
+                    start: range.start,
+                    end: range.end,
+                    value: accepted,
+                    createdAt: new Date().toISOString()
+                };
+                state[key].push(entry);
+                state[task] = summaryText(task);
+                state.history.push({ id: entry.id, type: task, value: accepted, start: range.start, end: range.end, createdAt: entry.createdAt });
+                if (state.history.length > 30) state.history.shift();
+                state.lastProcessed[task] = range.end;
                 await saveChat();
                 refreshMacros();
+                const hidden = settings.auto.archiveMode === 'afterSummary' && !options.skipArchive
+                    ? await hideMessageRange(range.start, range.end)
+                    : 0;
                 render();
-                setStatus(`已更新 ${preview.length} 条表格记录`, 'ok');
+                setStatus(hidden ? `${label}已保存，已隐藏 ${hidden} 楼` : `${label}已保存`, 'ok');
                 return;
             }
-            const cleaned = extractMemory(result);
-            const state = chatState();
-            const label = task === 'big' ? '大总结' : '小总结';
-            const accepted = settings.auto.confirmBeforeWrite ? await editResult(label, cleaned) : cleaned;
-            if (accepted === null) {
-                setStatus('已取消写入', 'warn');
-                return;
-            }
-            const key = task === 'big' ? 'bigSegments' : 'smallSegments';
-            state[key] ||= [];
-            const entry = {
-                id: Date.now(),
-                type: task,
-                start: range.start,
-                end: range.end,
-                value: accepted,
-                createdAt: new Date().toISOString()
-            };
-            state[key].push(entry);
-            state[task] = summaryText(task);
-            state.history.push({ id: entry.id, type: task, value: accepted, start: range.start, end: range.end, createdAt: entry.createdAt });
-            if (state.history.length > 30) state.history.shift();
-            state.lastProcessed[task] = range.end;
-            await saveChat();
-            refreshMacros();
-            const hidden = settings.auto.archiveMode === 'afterSummary' && !options.skipArchive
-                ? await hideMessageRange(range.start, range.end)
-                : 0;
-            render();
-            setStatus(hidden ? `${label}已保存，已隐藏 ${hidden} 楼` : `${label}已保存`, 'ok');
         } catch (error) {
             console.warn(`[${PLUGIN_ID}] request failed`, error);
             setStatus(error?.name === 'AbortError' ? '请求已取消' : `失败：${error.message}`, 'error');
@@ -1353,7 +1443,7 @@ ${allTablesText()}
         }).join('\n\n');
     }
 
-    function modalDialog({ title, value = '', editable = false, confirmText = '确认', cancelText = '取消', danger = false }) {
+    function modalDialog({ title, value = '', editable = false, confirmText = '确认', cancelText = '取消', regenerateText = '', danger = false }) {
         return new Promise(resolve => {
             const overlay = hostDocument.createElement('div');
             overlay.className = 'mc-modal-cover';
@@ -1367,6 +1457,7 @@ ${allTablesText()}
                         ? `<textarea class="mc-modal-editor">${esc(value)}</textarea>`
                         : `<pre class="mc-modal-preview">${esc(value || '（无内容）')}</pre>`}
                     <div class="mc-modal-actions">
+                        ${regenerateText ? `<button type="button" data-mc-modal-regenerate>${esc(regenerateText)}</button>` : ''}
                         <button type="button" data-mc-modal-cancel>${esc(cancelText)}</button>
                         <button type="button" class="mc-primary ${danger ? 'mc-danger' : ''}" data-mc-modal-ok>${esc(confirmText)}</button>
                     </div>
@@ -1378,6 +1469,7 @@ ${allTablesText()}
             };
             overlay.addEventListener('click', event => {
                 if (event.target === overlay || event.target.closest('[data-mc-modal-close], [data-mc-modal-cancel]')) cleanup(null);
+                if (event.target.closest('[data-mc-modal-regenerate]')) cleanup(MODAL_REGENERATE);
                 if (event.target.closest('[data-mc-modal-ok]')) {
                     cleanup(editable ? overlay.querySelector('.mc-modal-editor')?.value?.trim() ?? '' : true);
                 }
@@ -1395,12 +1487,13 @@ ${allTablesText()}
         return modalDialog({ title, value, editable: false, ...options });
     }
 
-    function editResult(title, value) {
+    function editResult(title, value, options = {}) {
         return modalDialog({
             title: `${title}草稿，可直接修改后确认`,
             value,
             editable: true,
-            confirmText: '保存'
+            confirmText: '保存',
+            regenerateText: options.regenerate ? '重新生成' : ''
         });
     }
 
@@ -2341,12 +2434,17 @@ ${allTablesText()}
     function init() {
         if (hostDocument.getElementById(ROOT_ID)) return;
         settings = loadSettings();
+        saveSettings();
         loadTavernRegex();
         const tryMount = () => {
             mount();
             if (mounted) {
                 bindEvents();
                 registerMacros();
+                if (!hydratedSettings) {
+                    hydratedSettings = true;
+                    hydrateSettingsFromTavern();
+                }
                 return true;
             }
             return false;
