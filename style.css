@@ -482,6 +482,14 @@
     min-height: 28px;
 }
 
+#memory-cat-drawer .mc-compact-grid .mc-wide-setting {
+    grid-column: span 2;
+}
+
+#memory-cat-drawer .mc-wide-setting input {
+    min-width: 180px;
+}
+
 #memory-cat-drawer .mc-log-panel {
     border-top: 1px solid var(--mc-heavy-line);
 }
@@ -605,6 +613,12 @@
     color: var(--mc-soft-ink);
     font-family: Arial, "Noto Sans SC", sans-serif;
     font-size: 0.7rem;
+}
+
+#memory-cat-drawer .mc-form-grid label.mc-check {
+    flex-direction: row;
+    align-items: center;
+    color: var(--mc-ink);
 }
 
 #memory-cat-drawer .mc-mode-picker {
@@ -929,6 +943,89 @@
     border-top: 1px solid var(--mc-heavy-line);
 }
 
+.mc-modal-cover {
+    position: fixed;
+    inset: 0;
+    z-index: 2147483647;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 18px;
+    background: rgba(244, 244, 241, 0.72);
+}
+
+.mc-modal-cover .mc-modal {
+    width: min(720px, 100%);
+    max-height: min(760px, calc(100dvh - 36px));
+    display: flex;
+    flex-direction: column;
+    border: 2px solid #111111;
+    background: #f4f4f1;
+    color: #111111;
+    font-family: Georgia, "Times New Roman", "Noto Serif SC", serif;
+}
+
+.mc-modal-cover .mc-modal-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 12px 14px;
+    border-bottom: 3px double #111111;
+}
+
+.mc-modal-cover .mc-modal-head strong {
+    font-family: Arial, "Noto Sans SC", sans-serif;
+    font-size: 0.9rem;
+    letter-spacing: 0.08em;
+}
+
+.mc-modal-cover button {
+    min-height: 30px;
+    padding: 5px 10px;
+    border: 1px solid #111111;
+    border-radius: 0;
+    background: #ffffff;
+    color: #111111;
+    font-family: Arial, "Noto Sans SC", sans-serif;
+    font-size: 0.72rem;
+}
+
+.mc-modal-cover button.mc-primary {
+    background: #111111;
+    color: #ffffff;
+}
+
+.mc-modal-cover .mc-modal-preview,
+.mc-modal-cover .mc-modal-editor {
+    flex: 1 1 auto;
+    min-height: 260px;
+    max-height: min(560px, 65dvh);
+    margin: 0;
+    padding: 14px;
+    overflow: auto;
+    border: 0;
+    border-bottom: 1px solid #b7b7b2;
+    background: #ffffff;
+    color: #111111;
+    font-family: "Courier New", "Noto Sans SC", monospace;
+    font-size: 0.78rem;
+    line-height: 1.55;
+    white-space: pre-wrap;
+}
+
+.mc-modal-cover .mc-modal-editor {
+    resize: vertical;
+}
+
+.mc-modal-cover .mc-modal-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 8px;
+    padding: 12px 14px;
+}
+
 @media (max-width: 700px) {
     #memory-cat-drawer .mc-drawer-content {
         min-width: 100vw;
@@ -949,9 +1046,51 @@
     #memory-cat-drawer .mc-library-grid,
     #memory-cat-drawer .mc-form-grid,
     #memory-cat-drawer .mc-schema-editor,
-    #memory-cat-drawer .mc-mode-picker,
-    #memory-cat-drawer .mc-preset-row {
+    #memory-cat-drawer .mc-mode-picker {
         grid-template-columns: 1fr;
+    }
+
+    #memory-cat-drawer .mc-compact-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+    }
+
+    #memory-cat-drawer .mc-compact-grid .mc-wide-setting,
+    #memory-cat-drawer .mc-preset-row {
+        grid-column: 1 / -1;
+        grid-template-columns: 1fr;
+    }
+
+    #memory-cat-drawer .mc-compact-grid label {
+        align-items: flex-start;
+        justify-content: flex-start;
+        min-width: 0;
+        font-size: 0.66rem;
+    }
+
+    #memory-cat-drawer .mc-wide-setting input {
+        min-width: 0;
+    }
+
+    #memory-cat-drawer .mc-range label {
+        width: calc(50% - 6px);
+        justify-content: space-between;
+    }
+
+    #memory-cat-drawer .mc-range input {
+        width: 70px;
+    }
+
+    #memory-cat-drawer .mc-action-row button {
+        flex: 1 1 calc(50% - 8px);
+    }
+
+    #memory-cat-drawer .mc-request-row summary {
+        grid-template-columns: 1fr auto;
+    }
+
+    #memory-cat-drawer .mc-request-row summary em {
+        grid-column: 1 / -1;
     }
 
     #memory-cat-drawer .mc-mode-picker .mc-field-caption {
@@ -967,5 +1106,16 @@
 
     #memory-cat-drawer .mc-variable-row {
         grid-template-columns: 1fr auto;
+    }
+
+    .mc-modal-cover {
+        align-items: stretch;
+        padding: 10px;
+    }
+
+    .mc-modal-cover .mc-modal-preview,
+    .mc-modal-cover .mc-modal-editor {
+        min-height: 320px;
+        max-height: none;
     }
 }

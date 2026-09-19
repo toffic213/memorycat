@@ -118,7 +118,8 @@
             models: [],
             temperature: 0.35,
             maxTokens: 1200,
-            timeout: 60000
+            timeout: 60000,
+            stream: true
         },
         auto: {
             enabled: false,
@@ -137,6 +138,7 @@
             confirmBeforeWrite: true,
             rollbackBranchWrites: true,
             excludeHidden: true,
+            excludeTags: '',
             archiveMode: 'off',
             keepVisible: 40
         },
@@ -236,6 +238,7 @@
         next.auto.summaryDelay = Math.max(0, Number(next.auto.summaryDelay) || 0);
         next.auto.tableDelay = Math.max(0, Number(next.auto.tableDelay) || 0);
         next.auto.excludeHidden = next.auto.excludeHidden !== false;
+        next.auto.excludeTags = String(next.auto.excludeTags || '');
         next.prompts = { ...next.prompts, ...(raw.prompts || {}) };
         if (!String(next.prompts.header || '').includes('记忆喵破限整理协议')) next.prompts.header = DEFAULT_PROMPTS.header;
         if (String(raw.prompts?.batch || '').includes('表名 | [主键] | 字段：更新内容')) next.prompts.batch = DEFAULT_PROMPTS.batch;
@@ -508,12 +511,41 @@
                 console.warn(`[${PLUGIN_ID}] getRegexedString failed`, error);
             }
         }
+        const tagStripped = stripExcludedTags(value);
+        if (tagStripped.removed) {
+            addLog(`独立总结取文：楼层 ${index} 已排除自定义标签 ${tagStripped.names.join('、')}，移除 ${tagStripped.removed} 字符`, 'trim');
+            value = tagStripped.value;
+        }
         if (settings.auto.trimMemoryBlocks) {
             const stripped = stripMemoryBlocks(value);
             if (stripped.removed) addLog(`独立总结取文：楼层 ${index} 已修剪记忆块，移除 ${stripped.removed} 字符`, 'trim');
             return stripped.value.trim();
         }
         return value.trim();
+    }
+
+    function excludedTagNames() {
+        return [...new Set(String(settings.auto.excludeTags || '')
+            .split(/[\s,，、;；|]+/)
+            .map(name => name.replace(/^<|>$/g, '').replace(/^\//, '').trim())
+            .filter(name => /^[A-Za-z][\w:-]*$/.test(name)))];
+    }
+
+    function stripExcludedTags(value) {
+        let textValue = String(value || '');
+        let removed = 0;
+        const names = [];
+        for (const name of excludedTagNames()) {
+            const before = textValue.length;
+            const pattern = new RegExp(`<${name}\\b[^>]*>[\\s\\S]*?<\\/${name}>`, 'gi');
+            textValue = textValue.replace(pattern, '');
+            const diff = before - textValue.length;
+            if (diff > 0) {
+                removed += diff;
+                names.push(name);
+            }
+        }
+        return { value: textValue, removed, names };
     }
 
     function messageHidden(message, index) {
@@ -530,6 +562,12 @@
         if (!message || !reason) return;
         message.extra ||= {};
         message.extra.memoryCatHidden = reason;
+    }
+
+    function clearMemoryCatHideReason(message) {
+        if (!message?.extra) return;
+        delete message.extra.memoryCatHidden;
+        delete message.extra.memory_cat_hidden;
     }
 
     function excludedFromMemorySource(message, index) {
@@ -582,23 +620,45 @@
         return changed;
     }
 
+    function showMessage(index, message) {
+        if (!message) return false;
+        message.is_system = false;
+        clearMemoryCatHideReason(message);
+        const block = hostDocument.querySelector(`.mes[mesid="${index}"]`);
+        if (block) block.setAttribute('is_system', 'false');
+        return true;
+    }
+
     async function archiveOldVisibleMessages() {
-        if (settings.auto.archiveMode !== 'keepRecent') return 0;
         const keep = Math.max(1, Number(settings.auto.keepVisible) || 40);
-        const indexes = visibleMessageIndexes();
-        if (indexes.length <= keep) return 0;
-        const toHide = indexes.slice(0, indexes.length - keep);
+        const messages = chatMessages();
+        const eligible = messages
+            .map((message, index) => ({ message, index, hidden: messageHidden(message, index), reason: memoryCatHideReason(message) }))
+            .filter(({ message, hidden, reason }) => messageText(message) && (!hidden || reason === 'compact'));
+        const shouldShow = new Set(settings.auto.archiveMode === 'keepRecent'
+            ? eligible.slice(-keep).map(item => item.index)
+            : eligible.map(item => item.index));
         let changed = 0;
-        for (const index of toHide) {
-            const message = chatMessages()[index];
-            if (!message || messageHidden(message, index)) continue;
+        for (const { message, index, hidden, reason } of eligible) {
+            if (shouldShow.has(index)) {
+                if (hidden && reason === 'compact' && showMessage(index, message)) changed++;
+                continue;
+            }
+            if (settings.auto.archiveMode !== 'keepRecent' || hidden) continue;
             message.is_system = true;
             setMemoryCatHideReason(message, 'compact');
             changed++;
             const block = hostDocument.querySelector(`.mes[mesid="${index}"]`);
             if (block) block.setAttribute('is_system', 'true');
         }
-        if (changed) await saveChat();
+        if (changed) {
+            try {
+                if (typeof hostWindow.refreshSwipeButtons === 'function') hostWindow.refreshSwipeButtons();
+            } catch {
+                // Optional outside Tavern modules.
+            }
+            await saveChat();
+        }
         return changed;
     }
 
@@ -852,6 +912,75 @@ ${allTablesText()}
         throw lastError || new Error('获取模型失败。');
     }
 
+    function completionFromData(data) {
+        return data?.choices?.[0]?.message?.content
+            ?? data?.choices?.[0]?.text
+            ?? data?.output_text
+            ?? data?.content
+            ?? '';
+    }
+
+    async function readStreamResponse(response, keepAlive) {
+        const reader = response.body?.getReader?.();
+        if (!reader) throw new Error('当前环境无法读取流式响应。');
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let result = '';
+        const consumeLine = line => {
+            const trimmed = line.trim();
+            if (!trimmed) return;
+            const payload = trimmed.startsWith('data:') ? trimmed.slice(5).trim() : trimmed;
+            if (!payload || payload === '[DONE]') return;
+            try {
+                const data = JSON.parse(payload);
+                const delta = data?.choices?.[0]?.delta?.content
+                    ?? data?.choices?.[0]?.message?.content
+                    ?? data?.choices?.[0]?.text
+                    ?? data?.delta
+                    ?? '';
+                if (typeof delta === 'string') result += delta;
+            } catch {
+                // Some proxies emit comments or partial keep-alive lines.
+            }
+        };
+        while (true) {
+            const { value, done } = await reader.read();
+            keepAlive?.();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split(/\r?\n/);
+            buffer = lines.pop() || '';
+            lines.forEach(consumeLine);
+        }
+        buffer += decoder.decode();
+        if (buffer.trim()) consumeLine(buffer);
+        return result.trim();
+    }
+
+    async function requestCompletion(url, body, useStream, keepAlive) {
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${settings.api.apiKey}`
+            },
+            body: JSON.stringify(useStream ? { ...body, stream: true } : body),
+            signal: requestController.signal
+        });
+        keepAlive?.();
+        if (!response.ok) throw new Error(`API ${response.status}`);
+        const contentType = response.headers.get('content-type') || '';
+        if (useStream && response.body && (contentType.includes('text/event-stream') || !contentType.includes('application/json'))) {
+            const streamed = await readStreamResponse(response, keepAlive);
+            if (streamed) return streamed;
+            throw new Error('流式 API 返回了空内容。');
+        }
+        const data = await response.json();
+        const result = completionFromData(data);
+        if (typeof result === 'string' && result.trim()) return result.trim();
+        throw new Error('API 返回了空内容。');
+    }
+
     async function ask(task, range) {
         const urls = apiCandidates();
         if (!urls.length || !settings.api.apiKey || !settings.api.model) {
@@ -859,7 +988,13 @@ ${allTablesText()}
         }
         requestController?.abort();
         requestController = new AbortController();
-        const timer = hostWindow.setTimeout(() => requestController.abort(), Math.max(5000, Number(settings.api.timeout) || 60000));
+        const timeout = Math.max(5000, Number(settings.api.timeout) || 60000);
+        let timer = null;
+        const keepAlive = () => {
+            if (timer) hostWindow.clearTimeout(timer);
+            timer = hostWindow.setTimeout(() => requestController.abort(), timeout);
+        };
+        keepAlive();
         const body = {
             model: settings.api.model,
             temperature: Number(settings.api.temperature) || 0.35,
@@ -869,35 +1004,23 @@ ${allTablesText()}
                 { role: 'user', content: buildPrompt(task, range) }
             ]
         };
-        addRequestLog(task, range, body);
+        addRequestLog(task, range, { ...body, stream: settings.api.stream !== false });
         let lastError = null;
         try {
             for (const url of urls) {
-                try {
-                    const response = await fetch(url, {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                            Authorization: `Bearer ${settings.api.apiKey}`
-                        },
-                        body: JSON.stringify(body),
-                        signal: requestController.signal
-                    });
-                    if (!response.ok) {
-                        lastError = new Error(`API ${response.status}`);
-                        continue;
+                const modes = settings.api.stream === false ? [false] : [true, false];
+                for (const useStream of modes) {
+                    try {
+                        return await requestCompletion(url, body, useStream, keepAlive);
+                    } catch (error) {
+                        lastError = error;
+                        if (error?.name === 'AbortError') throw error;
                     }
-                    const data = await response.json();
-                    const result = data?.choices?.[0]?.message?.content ?? data?.choices?.[0]?.text;
-                    if (typeof result === 'string' && result.trim()) return result.trim();
-                    lastError = new Error('API 返回了空内容。');
-                } catch (error) {
-                    lastError = error;
                 }
             }
             throw lastError || new Error('API 请求失败。');
         } finally {
-            hostWindow.clearTimeout(timer);
+            if (timer) hostWindow.clearTimeout(timer);
             requestController = null;
         }
     }
@@ -1097,7 +1220,7 @@ ${allTablesText()}
     async function applyPendingBatch() {
         const state = chatState();
         if (!state?.pendingBatch) return 0;
-        if (settings.auto.confirmBeforeWrite && !hostWindow.confirm('记忆喵准备写入这批待确认表格更新，要继续吗？')) return 0;
+        if (settings.auto.confirmBeforeWrite && !await confirmDialog('写入待确认表格更新？', state.pendingBatch, { confirmText: '写入' })) return 0;
         const preview = applyBatch(`<Memory>\n${state.pendingBatch}\n</Memory>`, false, {
             mode: 'pending',
             source: 'manual',
@@ -1166,7 +1289,11 @@ ${allTablesText()}
                     setStatus(`已暂存 ${preview.length} 条表格更新`, 'ok');
                     return;
                 }
-                const accepted = !settings.auto.confirmBeforeWrite || hostWindow.confirm(`记忆喵准备更新 ${preview.length} 条表格记录，确认写入吗？`);
+                const accepted = !settings.auto.confirmBeforeWrite || await confirmDialog(
+                    `写入 ${preview.length} 条表格记录？`,
+                    formatPreview(preview),
+                    { confirmText: '写入' }
+                );
                 if (!accepted) {
                     setStatus('已取消写入', 'warn');
                     return;
@@ -1216,9 +1343,65 @@ ${allTablesText()}
         }
     }
 
+    function formatPreview(preview) {
+        return preview.map(item => {
+            const fields = Object.entries(item.fields || {})
+                .filter(([key]) => key !== '主键')
+                .map(([key, value]) => `${key}：${value}`)
+                .join(' | ');
+            return `${item.type === 'new' ? '新增' : '更新'} / ${settings.tableDefinitions[item.table]?.label || item.table} / [${item.key}]\n${fields}`;
+        }).join('\n\n');
+    }
+
+    function modalDialog({ title, value = '', editable = false, confirmText = '确认', cancelText = '取消', danger = false }) {
+        return new Promise(resolve => {
+            const overlay = hostDocument.createElement('div');
+            overlay.className = 'mc-modal-cover';
+            overlay.innerHTML = `
+                <div class="mc-modal" role="dialog" aria-modal="true">
+                    <div class="mc-modal-head">
+                        <strong>${esc(title)}</strong>
+                        <button type="button" data-mc-modal-close>×</button>
+                    </div>
+                    ${editable
+                        ? `<textarea class="mc-modal-editor">${esc(value)}</textarea>`
+                        : `<pre class="mc-modal-preview">${esc(value || '（无内容）')}</pre>`}
+                    <div class="mc-modal-actions">
+                        <button type="button" data-mc-modal-cancel>${esc(cancelText)}</button>
+                        <button type="button" class="mc-primary ${danger ? 'mc-danger' : ''}" data-mc-modal-ok>${esc(confirmText)}</button>
+                    </div>
+                </div>
+            `;
+            const cleanup = result => {
+                overlay.remove();
+                resolve(result);
+            };
+            overlay.addEventListener('click', event => {
+                if (event.target === overlay || event.target.closest('[data-mc-modal-close], [data-mc-modal-cancel]')) cleanup(null);
+                if (event.target.closest('[data-mc-modal-ok]')) {
+                    cleanup(editable ? overlay.querySelector('.mc-modal-editor')?.value?.trim() ?? '' : true);
+                }
+            });
+            overlay.addEventListener('keydown', event => {
+                if (event.key === 'Escape') cleanup(null);
+            });
+            hostDocument.body.appendChild(overlay);
+            const focusTarget = editable ? overlay.querySelector('.mc-modal-editor') : overlay.querySelector('[data-mc-modal-ok]');
+            focusTarget?.focus();
+        });
+    }
+
+    function confirmDialog(title, value = '', options = {}) {
+        return modalDialog({ title, value, editable: false, ...options });
+    }
+
     function editResult(title, value) {
-        const result = hostWindow.prompt(`${title}草稿，可直接修改后确认：`, value);
-        return result === null ? null : result.trim();
+        return modalDialog({
+            title: `${title}草稿，可直接修改后确认`,
+            value,
+            editable: true,
+            confirmText: '保存'
+        });
     }
 
     function realtimeTableMode() {
@@ -1253,6 +1436,7 @@ ${allTablesText()}
                         <label class="mc-check"><input data-mc-setting="auto.excludeHidden" type="checkbox" ${settings.auto.excludeHidden ? 'checked' : ''}>跳过已隐藏楼层</label>
                         <label class="mc-check"><input data-mc-setting="auto.confirmBeforeRun" type="checkbox" ${settings.auto.confirmBeforeRun ? 'checked' : ''}>运行前询问</label>
                         <label class="mc-check"><input data-mc-setting="auto.confirmBeforeWrite" type="checkbox" ${settings.auto.confirmBeforeWrite ? 'checked' : ''}>写入前询问</label>
+                        <label class="mc-wide-setting">排除标签<input data-mc-setting="auto.excludeTags" value="${esc(settings.auto.excludeTags)}" placeholder="thinking, status"></label>
                     </div>
                     <div class="mc-mode-picker mc-archive-picker">
                         <span class="mc-field-caption">楼层收纳</span>
@@ -1459,44 +1643,51 @@ ${allTablesText()}
     function renderSettings() {
         return `
             <section class="mc-section">
-                <div class="mc-section-head"><div><div class="mc-kicker">SETTINGS / PRIVATE API</div><h2>独立 API</h2></div><span class="mc-action-row"><button data-mc-action="fetch-models">获取模型</button><button data-mc-action="test-api">测试连接</button></span></div>
-                <div class="mc-form-grid">
-                    <label>Base URL<input data-mc-setting="api.baseUrl" value="${esc(settings.api.baseUrl)}" placeholder="https://example.com/v1"></label>
-                    <label>API Key<input data-mc-setting="api.apiKey" type="password" value="${esc(settings.api.apiKey)}"></label>
-                    <label>模型下拉<select data-mc-setting="api.model">
-                        <option value="">手动填写 / 未选择</option>
-                        ${(settings.api.models || []).map(model => `<option value="${esc(model)}" ${settings.api.model === model ? 'selected' : ''}>${esc(model)}</option>`).join('')}
-                    </select></label>
-                    <label>模型手填<input data-mc-setting="api.model" value="${esc(settings.api.model)}" placeholder="模型名称"></label>
-                    <label>温度<input data-mc-setting="api.temperature" type="number" min="0" max="2" step="0.05" value="${settings.api.temperature}"></label>
-                    <label>最大输出<input data-mc-setting="api.maxTokens" type="number" min="128" max="16000" value="${settings.api.maxTokens}"></label>
-                    <label>超时毫秒<input data-mc-setting="api.timeout" type="number" min="5000" max="300000" value="${settings.api.timeout}"></label>
-                </div>
-                <div class="mc-preset-row">
-                    <label>API 预设名<input id="memory-cat-api-preset-name" placeholder="例如：主力总结 API"></label>
-                    <label>已存 API 预设<select id="memory-cat-api-preset-select">${settings.apiPresets.map(preset => `<option value="${esc(preset.name)}">${esc(preset.name)}</option>`).join('')}</select></label>
-                    <button data-mc-action="save-api-preset">保存 API 预设</button>
-                    <button data-mc-action="load-api-preset">读取</button>
-                    <button data-mc-action="delete-api-preset">删除</button>
-                </div>
-                <hr>
-                <div class="mc-section-head"><div><div class="mc-kicker">SCHEMA / DIY</div><h2>表格结构</h2></div></div>
-                ${Object.entries(settings.tableDefinitions).map(([key, definition]) => `
-                    <div class="mc-schema-editor">
-                        <label>表名<input data-mc-table-label="${key}" value="${esc(definition.label)}"></label>
-                        <label>字段（用逗号或换行分隔）<textarea data-mc-fields="${key}">${esc(definition.fields.join('、'))}</textarea></label>
+                <details class="mc-fold" open>
+                    <summary><span>独立 API</span><em>模型 / 连接 / 预设</em></summary>
+                    <div class="mc-action-row mc-tight-row"><button data-mc-action="fetch-models">获取模型</button><button data-mc-action="test-api">测试连接</button></div>
+                    <div class="mc-form-grid">
+                        <label>Base URL<input data-mc-setting="api.baseUrl" value="${esc(settings.api.baseUrl)}" placeholder="https://example.com/v1"></label>
+                        <label>API Key<input data-mc-setting="api.apiKey" type="password" value="${esc(settings.api.apiKey)}"></label>
+                        <label>模型下拉<select data-mc-setting="api.model">
+                            <option value="">手动填写 / 未选择</option>
+                            ${(settings.api.models || []).map(model => `<option value="${esc(model)}" ${settings.api.model === model ? 'selected' : ''}>${esc(model)}</option>`).join('')}
+                        </select></label>
+                        <label>模型手填<input data-mc-setting="api.model" value="${esc(settings.api.model)}" placeholder="模型名称"></label>
+                        <label>温度<input data-mc-setting="api.temperature" type="number" min="0" max="2" step="0.05" value="${settings.api.temperature}"></label>
+                        <label>最大输出<input data-mc-setting="api.maxTokens" type="number" min="128" max="16000" value="${settings.api.maxTokens}"></label>
+                        <label>超时毫秒<input data-mc-setting="api.timeout" type="number" min="5000" max="300000" value="${settings.api.timeout}"></label>
+                        <label class="mc-check"><input data-mc-setting="api.stream" type="checkbox" ${settings.api.stream !== false ? 'checked' : ''}>流式读取</label>
                     </div>
-                `).join('')}
-                <hr>
-                <div class="mc-section-head"><div><div class="mc-kicker">PROMPTS</div><h2>提示词</h2></div><button data-mc-action="reset-prompts">恢复默认</button></div>
-                <div class="mc-preset-row">
-                    <label>总结方案名<input id="memory-cat-scheme-preset-name" placeholder="例如：长剧情严谨版"></label>
-                    <label>已存总结方案<select id="memory-cat-scheme-preset-select">${settings.schemePresets.map(preset => `<option value="${esc(preset.name)}">${esc(preset.name)}</option>`).join('')}</select></label>
-                    <button data-mc-action="save-scheme-preset">保存总结方案</button>
-                    <button data-mc-action="load-scheme-preset">读取</button>
-                    <button data-mc-action="delete-scheme-preset">删除</button>
-                </div>
-                ${['header', 'big', 'small', 'batch', 'realtime'].map(key => `<label class="mc-prompt-label">${key === 'header' ? '破限' : key === 'big' ? '大总结' : key === 'small' ? '小总结' : key === 'batch' ? '批量填表' : '实时填表'}<textarea data-mc-setting="prompts.${key}">${esc(settings.prompts[key])}</textarea></label>`).join('')}
+                    <div class="mc-preset-row">
+                        <label>API 预设名<input id="memory-cat-api-preset-name" placeholder="例如：主力总结 API"></label>
+                        <label>已存 API 预设<select id="memory-cat-api-preset-select">${settings.apiPresets.map(preset => `<option value="${esc(preset.name)}">${esc(preset.name)}</option>`).join('')}</select></label>
+                        <button data-mc-action="save-api-preset">保存</button>
+                        <button data-mc-action="load-api-preset">读取</button>
+                        <button data-mc-action="delete-api-preset">删除</button>
+                    </div>
+                </details>
+                <details class="mc-fold">
+                    <summary><span>表格结构</span><em>角色 / 物品 / 世界 / 主支线</em></summary>
+                    ${Object.entries(settings.tableDefinitions).map(([key, definition]) => `
+                        <div class="mc-schema-editor">
+                            <label>表名<input data-mc-table-label="${key}" value="${esc(definition.label)}"></label>
+                            <label>字段（用逗号或换行分隔）<textarea data-mc-fields="${key}">${esc(definition.fields.join('、'))}</textarea></label>
+                        </div>
+                    `).join('')}
+                </details>
+                <details class="mc-fold">
+                    <summary><span>提示词</span><em>破限 / 总结 / 填表</em></summary>
+                    <div class="mc-action-row mc-tight-row"><button data-mc-action="reset-prompts">恢复默认</button></div>
+                    <div class="mc-preset-row">
+                        <label>总结方案名<input id="memory-cat-scheme-preset-name" placeholder="例如：长剧情严谨版"></label>
+                        <label>已存总结方案<select id="memory-cat-scheme-preset-select">${settings.schemePresets.map(preset => `<option value="${esc(preset.name)}">${esc(preset.name)}</option>`).join('')}</select></label>
+                        <button data-mc-action="save-scheme-preset">保存</button>
+                        <button data-mc-action="load-scheme-preset">读取</button>
+                        <button data-mc-action="delete-scheme-preset">删除</button>
+                    </div>
+                    ${['header', 'big', 'small', 'batch', 'realtime'].map(key => `<label class="mc-prompt-label">${key === 'header' ? '破限' : key === 'big' ? '大总结' : key === 'small' ? '小总结' : key === 'batch' ? '批量填表' : '实时填表'}<textarea data-mc-setting="prompts.${key}">${esc(settings.prompts[key])}</textarea></label>`).join('')}
+                </details>
             </section>
         `;
     }
@@ -1580,7 +1771,7 @@ ${allTablesText()}
         render();
     }
 
-    function onInput(event) {
+    async function onInput(event) {
         const target = event.target;
         const state = chatState();
         if (target.matches('[data-mc-summary]')) {
@@ -1631,7 +1822,17 @@ ${allTablesText()}
             if (target.dataset.mcSetting === 'auto.archiveMode') {
                 settings.auto.archiveMode = ['off', 'keepRecent', 'afterSummary'].includes(target.value) ? target.value : 'off';
                 saveSettings();
+                const changed = await archiveOldVisibleMessages();
                 render();
+                if (changed) setStatus(settings.auto.archiveMode === 'keepRecent' ? `楼层收纳已同步 ${changed} 楼` : `已放出 ${changed} 个收纳楼层`, 'ok');
+                return;
+            }
+            if (target.dataset.mcSetting === 'auto.keepVisible') {
+                settings.auto.keepVisible = Math.max(1, Number(target.value) || 40);
+                saveSettings();
+                const changed = await archiveOldVisibleMessages();
+                render();
+                if (changed) setStatus(`保留楼层已同步 ${changed} 楼`, 'ok');
                 return;
             }
             saveSettings();
@@ -1702,7 +1903,7 @@ ${allTablesText()}
         if (action === 'edit-summary') {
             const state = chatState();
             const type = button.dataset.type;
-            const edited = editResult(type === 'big' ? '大总结' : '小总结', state[type]);
+            const edited = await editResult(type === 'big' ? '大总结' : '小总结', state[type]);
             if (edited !== null) {
                 state[type] = edited;
                 await saveChat();
@@ -1714,8 +1915,10 @@ ${allTablesText()}
             const state = chatState();
             const type = button.dataset.type;
             const label = type === 'big' ? '大总结' : '小总结';
-            if (!state?.[type] || !hostWindow.confirm(`删除当前${label}？`)) return;
+            if (!state?.[type] && !summarySegments(type).length) return;
+            if (!await confirmDialog(`删除当前${label}？`, summaryText(type), { confirmText: '删除', danger: true })) return;
             state[type] = '';
+            state[type === 'big' ? 'bigSegments' : 'smallSegments'] = [];
             await saveChat();
             refreshMacros();
             render();
@@ -1761,9 +1964,11 @@ ${allTablesText()}
             const state = chatState();
             const type = button.dataset.type;
             const key = type === 'big' ? 'bigSegments' : 'smallSegments';
-            if (!state?.[key] || !hostWindow.confirm('删除这条总结记录？')) return;
+            if (!state?.[key]) return;
+            const entry = state[key].find(item => String(item.id) === String(button.dataset.id));
+            if (!entry || !await confirmDialog('删除这条总结记录？', entry.value || '', { confirmText: '删除', danger: true })) return;
             state[key] = state[key].filter(item => String(item.id) !== String(button.dataset.id));
-            state[type] = summaryText(type);
+            state[type] = state[key].length ? summaryText(type) : '';
             syncSummaryPointer(type);
             await saveChat();
             refreshMacros();
@@ -1852,7 +2057,7 @@ ${allTablesText()}
         if (action === 'compact-now') {
             const count = await archiveOldVisibleMessages();
             render();
-            setStatus(count ? `已隐藏 ${count} 个旧楼层` : '没有需要隐藏的旧楼层', count ? 'ok' : 'warn');
+            setStatus(count ? `楼层收纳已同步 ${count} 楼` : '楼层收纳无需调整', count ? 'ok' : 'warn');
             return;
         }
         if (action === 'add-row') {
