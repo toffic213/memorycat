@@ -804,6 +804,15 @@
             : Number(state.lastProcessed[type] || 0);
     }
 
+    function normalizeSummaryPointers(state = chatState()) {
+        if (!state) return;
+        for (const type of ['big', 'small']) {
+            const segments = summarySegments(type);
+            const segmentEnd = segments.length ? Math.max(...segments.map(item => Number(item.end) || 0)) : 0;
+            state.lastProcessed[type] = Math.max(Number(state.lastProcessed[type] || 0), segmentEnd);
+        }
+    }
+
     function allTablesText() {
         return tableKeys().map(key => {
             return `#${settings.tableDefinitions[key].label}\n${tableText(key) || '（暂无记录）'}`;
@@ -1449,6 +1458,7 @@ ${allTablesText()}
                 state.history.push({ id: entry.id, type: task, value: accepted, start: range.start, end: range.end, createdAt: entry.createdAt });
                 if (state.history.length > 30) state.history.shift();
                 state.lastProcessed[task] = range.end;
+                normalizeSummaryPointers(state);
                 await saveChat();
                 refreshMacros();
                 const hidden = settings.auto.archiveMode === 'afterSummary' && !options.skipArchive
@@ -1498,7 +1508,13 @@ ${allTablesText()}
                 overlay.remove();
                 resolve(result);
             };
+            ['pointerdown', 'mousedown', 'mouseup', 'click'].forEach(type => {
+                overlay.addEventListener(type, event => {
+                    event.stopPropagation();
+                }, true);
+            });
             overlay.addEventListener('click', event => {
+                event.stopPropagation();
                 if (event.target === overlay || event.target.closest('[data-mc-modal-close], [data-mc-modal-cancel]')) cleanup(null);
                 if (event.target.closest('[data-mc-modal-regenerate]')) cleanup(MODAL_REGENERATE);
                 if (event.target.closest('[data-mc-modal-ok]')) {
@@ -1506,6 +1522,7 @@ ${allTablesText()}
                 }
             });
             overlay.addEventListener('keydown', event => {
+                event.stopPropagation();
                 if (event.key === 'Escape') cleanup(null);
             });
             hostDocument.body.appendChild(overlay);
@@ -1901,7 +1918,8 @@ ${allTablesText()}
         if (target.matches('[data-mc-summary]')) {
             if (!state) return;
             state[target.dataset.mcSummary] = target.value;
-            saveChat();
+            normalizeSummaryPointers(state);
+            await saveChat();
             refreshMacros();
             return;
         }
@@ -1917,7 +1935,8 @@ ${allTablesText()}
             if (target.matches('[data-mc-summary-entry-end]')) entry.end = Math.max(0, Number(target.value) || 0);
             state[type] = summaryText(type);
             syncSummaryPointer(type);
-            saveChat();
+            normalizeSummaryPointers(state);
+            await saveChat();
             refreshMacros();
             return;
         }
@@ -1926,7 +1945,7 @@ ${allTablesText()}
             const type = target.dataset.mcPointer;
             if (!['big', 'small', 'table'].includes(type)) return;
             state.lastProcessed[type] = Math.max(0, Number(target.value) || 0);
-            saveChat();
+            await saveChat();
             refreshMacros();
             return;
         }
@@ -2004,7 +2023,7 @@ ${allTablesText()}
             const rowElement = target.closest('[data-mc-row]');
             const [table, index] = rowElement.dataset.mcRow.split(':');
             state.tables[table][Number(index)][target.dataset.mcField] = target.value;
-            saveChat();
+            await saveChat();
             refreshMacros();
             return;
         }
@@ -2044,6 +2063,7 @@ ${allTablesText()}
             const edited = await editResult(type === 'big' ? '大总结' : '小总结', state[type]);
             if (edited !== null) {
                 state[type] = edited;
+                normalizeSummaryPointers(state);
                 await saveChat();
                 render();
             }
@@ -2057,6 +2077,7 @@ ${allTablesText()}
             if (!await confirmDialog(`删除当前${label}？`, summaryText(type), { confirmText: '删除', danger: true })) return;
             state[type] = '';
             state[type === 'big' ? 'bigSegments' : 'smallSegments'] = [];
+            normalizeSummaryPointers(state);
             await saveChat();
             refreshMacros();
             render();
@@ -2108,6 +2129,7 @@ ${allTablesText()}
             state[key] = state[key].filter(item => String(item.id) !== String(button.dataset.id));
             state[type] = state[key].length ? summaryText(type) : '';
             syncSummaryPointer(type);
+            normalizeSummaryPointers(state);
             await saveChat();
             refreshMacros();
             render();
@@ -2401,6 +2423,7 @@ ${allTablesText()}
         const state = chatState();
         const length = chatMessages().length;
         if (!state || !length) return;
+        normalizeSummaryPointers(state);
         const summaryReady = length >= Math.max(0, Number(settings.auto.summaryDelay) || 0);
         const tableReady = length >= Math.max(0, Number(settings.auto.tableDelay) || 0);
         const pendingSmall = length - Number(state.lastProcessed.small || 0);
@@ -2420,7 +2443,7 @@ ${allTablesText()}
                     await summarize('small', { auto: true, skipArchive: true, range });
                 }
                 if (summaryReady && pendingBig >= Math.max(1, Number(settings.auto.bigEvery) || 24)) {
-                    const range = { start: 0, end: length - 1 };
+                    const range = { start: since(state.lastProcessed.big), end: length - 1 };
                     summarizedStart = summarizedStart === null ? range.start : Math.min(summarizedStart, range.start);
                     await summarize('big', { auto: true, skipArchive: true, range });
                 }
