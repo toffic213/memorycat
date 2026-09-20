@@ -188,6 +188,7 @@
     let tavernScriptPromise = null;
     let tavernSettingsPromise = null;
     let hydratedSettings = false;
+    let activeModalCleanup = null;
 
     const clone = value => JSON.parse(JSON.stringify(value));
     const tableKeys = () => Object.keys(settings?.tableDefinitions || DEFAULT_SETTINGS.tableDefinitions);
@@ -1484,8 +1485,13 @@ ${allTablesText()}
         }).join('\n\n');
     }
 
+    function closeActiveModal(result = null) {
+        if (typeof activeModalCleanup === 'function') activeModalCleanup(result);
+    }
+
     function modalDialog({ title, value = '', editable = false, confirmText = '确认', cancelText = '取消', regenerateText = '', danger = false }) {
         return new Promise(resolve => {
+            closeActiveModal(null);
             const overlay = hostDocument.createElement('div');
             overlay.className = 'mc-modal-cover';
             overlay.innerHTML = `
@@ -1504,19 +1510,28 @@ ${allTablesText()}
                     </div>
                 </div>
             `;
+            let settled = false;
             const cleanup = result => {
+                if (settled) return;
+                settled = true;
+                activeModalCleanup = null;
                 overlay.remove();
                 resolve(result);
             };
-            ['pointerdown', 'mousedown', 'mouseup', 'click'].forEach(type => {
-                overlay.addEventListener(type, event => {
-                    event.stopPropagation();
-                }, true);
+            activeModalCleanup = cleanup;
+            ['pointerdown', 'mousedown', 'mouseup'].forEach(type => {
+                overlay.addEventListener(type, event => event.stopPropagation());
             });
             overlay.addEventListener('click', event => {
                 event.stopPropagation();
-                if (event.target === overlay || event.target.closest('[data-mc-modal-close], [data-mc-modal-cancel]')) cleanup(null);
-                if (event.target.closest('[data-mc-modal-regenerate]')) cleanup(MODAL_REGENERATE);
+                if (event.target === overlay || event.target.closest('[data-mc-modal-close], [data-mc-modal-cancel]')) {
+                    cleanup(null);
+                    return;
+                }
+                if (event.target.closest('[data-mc-modal-regenerate]')) {
+                    cleanup(MODAL_REGENERATE);
+                    return;
+                }
                 if (event.target.closest('[data-mc-modal-ok]')) {
                     cleanup(editable ? overlay.querySelector('.mc-modal-editor')?.value?.trim() ?? '' : true);
                 }
@@ -1904,6 +1919,7 @@ ${allTablesText()}
             }
             $(this).find('.drawer-icon').toggleClass('openIcon closedIcon');
             $drawer.toggleClass('openDrawer closedDrawer');
+            if (wasOpen) closeActiveModal(null);
             render();
         });
         root.addEventListener('click', onClick);
@@ -2048,6 +2064,7 @@ ${allTablesText()}
         if (action === 'refresh') return render();
         if (action === 'cancel') {
             requestController?.abort();
+            closeActiveModal(null);
             return;
         }
         if (action === 'summarize') {
@@ -2490,6 +2507,7 @@ ${allTablesText()}
         source.on(generationStopped, () => scheduleRealtimeConsume(600));
         source.on(ready, onPromptReady);
         source.on(changed, async () => {
+            closeActiveModal(null);
             await rollbackTableWritesFrom(chatMessages().length, 'chat-branch-or-reload');
             registerMacros();
             if (mounted) render();
