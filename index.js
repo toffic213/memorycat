@@ -146,6 +146,8 @@
         prompts: DEFAULT_PROMPTS,
         apiPresets: [],
         schemePresets: [],
+        activeApiPreset: '',
+        activeSchemePreset: '',
         tableDefinitions: {
             characters: {
                 label: '角色档案',
@@ -267,6 +269,8 @@
         if (String(raw.prompts?.realtime || '').includes('<memorize_update>')) next.prompts.realtime = DEFAULT_PROMPTS.realtime;
         next.apiPresets = Array.isArray(raw.apiPresets) ? raw.apiPresets : [];
         next.schemePresets = Array.isArray(raw.schemePresets) ? raw.schemePresets : [];
+        next.activeApiPreset = String(raw.activeApiPreset || '');
+        next.activeSchemePreset = String(raw.activeSchemePreset || '');
         for (const key of Object.keys(next.tableDefinitions)) {
             const stored = raw.tableDefinitions?.[key];
             if (stored && typeof stored === 'object') {
@@ -308,6 +312,30 @@
         return [...map.values()];
     }
 
+    function applyApiPreset(name) {
+        const preset = settings.apiPresets.find(item => item.name === name);
+        if (!preset) return false;
+        settings.api = { ...settings.api, ...clone(preset.api || {}) };
+        settings.activeApiPreset = name;
+        return true;
+    }
+
+    function applySchemePreset(name) {
+        const preset = settings.schemePresets.find(item => item.name === name);
+        if (!preset) return false;
+        settings.prompts = { ...settings.prompts, ...clone(preset.prompts || {}) };
+        settings.tableDefinitions = clone(preset.tableDefinitions || settings.tableDefinitions);
+        settings.auto = { ...settings.auto, ...clone(preset.auto || {}) };
+        settings.activeSchemePreset = name;
+        settings = mergeSettings(settings);
+        return true;
+    }
+
+    function applyActivePresets() {
+        if (settings.activeApiPreset) applyApiPreset(settings.activeApiPreset);
+        if (settings.activeSchemePreset) applySchemePreset(settings.activeSchemePreset);
+    }
+
     function loadPresetStore() {
         try {
             const stored = JSON.parse(hostWindow.localStorage.getItem(PRESET_STORAGE_KEY) || 'null');
@@ -330,7 +358,9 @@
             const presets = loadPresetStore();
             merged.apiPresets = mergePresetLists(tavern?.apiPresets, local?.apiPresets, presets.apiPresets);
             merged.schemePresets = mergePresetLists(tavern?.schemePresets, local?.schemePresets, presets.schemePresets);
-            return merged;
+            settings = merged;
+            applyActivePresets();
+            return settings;
         } catch {
             const fallback = clone(DEFAULT_SETTINGS);
             const presets = loadPresetStore();
@@ -385,6 +415,7 @@
         merged.apiPresets = mergePresetLists(stored.apiPresets, settings.apiPresets);
         merged.schemePresets = mergePresetLists(stored.schemePresets, settings.schemePresets);
         settings = merged;
+        applyActivePresets();
         saveSettings();
         if (mounted) render();
     }
@@ -1754,7 +1785,7 @@ ${allTablesText()}
                     </div>
                     <div class="mc-preset-row">
                         <label>API 预设名<input id="memory-cat-api-preset-name" placeholder="例如：主力总结 API"></label>
-                        <label>已存 API 预设<select id="memory-cat-api-preset-select">${settings.apiPresets.map(preset => `<option value="${esc(preset.name)}">${esc(preset.name)}</option>`).join('')}</select></label>
+                        <label>已存 API 预设<select id="memory-cat-api-preset-select">${settings.apiPresets.map(preset => `<option value="${esc(preset.name)}" ${settings.activeApiPreset === preset.name ? 'selected' : ''}>${esc(preset.name)}</option>`).join('')}</select></label>
                         <button data-mc-action="save-api-preset">保存</button>
                         <button data-mc-action="load-api-preset">读取</button>
                         <button data-mc-action="delete-api-preset">删除</button>
@@ -1774,7 +1805,7 @@ ${allTablesText()}
                     <div class="mc-action-row mc-tight-row"><button data-mc-action="reset-prompts">恢复默认</button></div>
                     <div class="mc-preset-row">
                         <label>总结方案名<input id="memory-cat-scheme-preset-name" placeholder="例如：长剧情严谨版"></label>
-                        <label>已存总结方案<select id="memory-cat-scheme-preset-select">${settings.schemePresets.map(preset => `<option value="${esc(preset.name)}">${esc(preset.name)}</option>`).join('')}</select></label>
+                        <label>已存总结方案<select id="memory-cat-scheme-preset-select">${settings.schemePresets.map(preset => `<option value="${esc(preset.name)}" ${settings.activeSchemePreset === preset.name ? 'selected' : ''}>${esc(preset.name)}</option>`).join('')}</select></label>
                         <button data-mc-action="save-scheme-preset">保存</button>
                         <button data-mc-action="load-scheme-preset">读取</button>
                         <button data-mc-action="delete-scheme-preset">删除</button>
@@ -1897,6 +1928,20 @@ ${allTablesText()}
             state.lastProcessed[type] = Math.max(0, Number(target.value) || 0);
             saveChat();
             refreshMacros();
+            return;
+        }
+        if (target.id === 'memory-cat-api-preset-select') {
+            if (!target.value || !applyApiPreset(target.value)) return;
+            saveSettings();
+            render();
+            setStatus(`API 预设已自动读取：${target.value}`, 'ok');
+            return;
+        }
+        if (target.id === 'memory-cat-scheme-preset-select') {
+            if (!target.value || !applySchemePreset(target.value)) return;
+            saveSettings();
+            render();
+            setStatus(`总结方案已自动读取：${target.value}`, 'ok');
             return;
         }
         if (target.matches('[data-mc-setting]')) {
@@ -2085,16 +2130,15 @@ ${allTablesText()}
             if (!name) return setStatus('请先填写 API 预设名', 'warn');
             const preset = { name, api: clone(settings.api), createdAt: new Date().toISOString() };
             settings.apiPresets = settings.apiPresets.filter(item => item.name !== name).concat(preset);
+            settings.activeApiPreset = name;
             saveSettings();
             render();
-            setStatus('API 预设已保存', 'ok');
+            setStatus('API 预设已保存并设为当前', 'ok');
             return;
         }
         if (action === 'load-api-preset') {
             const name = hostDocument.querySelector('#memory-cat-api-preset-select')?.value;
-            const preset = settings.apiPresets.find(item => item.name === name);
-            if (!preset) return setStatus('没有选中 API 预设', 'warn');
-            settings.api = { ...settings.api, ...clone(preset.api || {}) };
+            if (!applyApiPreset(name)) return setStatus('没有选中 API 预设', 'warn');
             saveSettings();
             render();
             setStatus('API 预设已读取', 'ok');
@@ -2104,6 +2148,7 @@ ${allTablesText()}
             const name = hostDocument.querySelector('#memory-cat-api-preset-select')?.value;
             if (!name || !hostWindow.confirm(`删除 API 预设“${name}”？`)) return;
             settings.apiPresets = settings.apiPresets.filter(item => item.name !== name);
+            if (settings.activeApiPreset === name) settings.activeApiPreset = '';
             saveSettings();
             render();
             setStatus('API 预设已删除', 'ok');
@@ -2120,19 +2165,15 @@ ${allTablesText()}
                 createdAt: new Date().toISOString()
             };
             settings.schemePresets = settings.schemePresets.filter(item => item.name !== name).concat(preset);
+            settings.activeSchemePreset = name;
             saveSettings();
             render();
-            setStatus('总结方案已保存', 'ok');
+            setStatus('总结方案已保存并设为当前', 'ok');
             return;
         }
         if (action === 'load-scheme-preset') {
             const name = hostDocument.querySelector('#memory-cat-scheme-preset-select')?.value;
-            const preset = settings.schemePresets.find(item => item.name === name);
-            if (!preset) return setStatus('没有选中总结方案', 'warn');
-            settings.prompts = { ...settings.prompts, ...clone(preset.prompts || {}) };
-            settings.tableDefinitions = clone(preset.tableDefinitions || settings.tableDefinitions);
-            settings.auto = { ...settings.auto, ...clone(preset.auto || {}) };
-            settings = mergeSettings(settings);
+            if (!applySchemePreset(name)) return setStatus('没有选中总结方案', 'warn');
             saveSettings();
             render();
             setStatus('总结方案已读取', 'ok');
@@ -2142,6 +2183,7 @@ ${allTablesText()}
             const name = hostDocument.querySelector('#memory-cat-scheme-preset-select')?.value;
             if (!name || !hostWindow.confirm(`删除总结方案“${name}”？`)) return;
             settings.schemePresets = settings.schemePresets.filter(item => item.name !== name);
+            if (settings.activeSchemePreset === name) settings.activeSchemePreset = '';
             saveSettings();
             render();
             setStatus('总结方案已删除', 'ok');
