@@ -784,8 +784,8 @@
         }).join('\n');
     }
 
-    function summarySegments(type) {
-        const state = chatState() || {};
+    function summarySegments(type, sourceState = chatState()) {
+        const state = sourceState || {};
         const key = type === 'big' ? 'bigSegments' : 'smallSegments';
         return Array.isArray(state[key]) ? state[key] : [];
     }
@@ -839,6 +839,13 @@
         return value;
     }
 
+    function maxSummaryEnd(type, state = chatState()) {
+        const ends = summarySegments(type, state)
+            .map(item => Number(item.end))
+            .filter(Number.isFinite);
+        return ends.length ? Math.max(...ends) : 0;
+    }
+
     function pruneSmallSummariesCovered(range) {
         const state = chatState();
         if (!state?.smallSegments?.length) return 0;
@@ -861,18 +868,54 @@
     function syncSummaryPointer(type) {
         const state = chatState();
         if (!state) return;
-        const segments = summarySegments(type);
-        state.lastProcessed[type] = segments.length
-            ? Math.max(...segments.map(item => Number(item.end) || 0))
-            : Number(state.lastProcessed[type] || 0);
+        state.lastProcessed[type] = maxSummaryEnd(type, state);
     }
 
     function normalizeSummaryPointers(state = chatState()) {
         if (!state) return;
         for (const type of ['big', 'small']) {
-            const segments = summarySegments(type);
-            const segmentEnd = segments.length ? Math.max(...segments.map(item => Number(item.end) || 0)) : 0;
-            state.lastProcessed[type] = Math.max(Number(state.lastProcessed[type] || 0), segmentEnd);
+            state.lastProcessed[type] = maxSummaryEnd(type, state);
+        }
+    }
+
+    function trimSummariesFrom(startIndex) {
+        const state = chatState();
+        if (!state) return 0;
+        const cutoff = Math.max(0, Number(startIndex) || 0);
+        let removed = 0;
+        for (const type of ['big', 'small']) {
+            const key = type === 'big' ? 'bigSegments' : 'smallSegments';
+            const before = Array.isArray(state[key]) ? state[key].length : 0;
+            state[key] = summarySegments(type, state).filter(segment => {
+                const end = Number(segment.end);
+                return Number.isFinite(end) && end < cutoff;
+            });
+            removed += before - state[key].length;
+            rebuildSummaryCache(type);
+        }
+        if (Array.isArray(state.history)) {
+            state.history = state.history.filter(item => {
+                const end = Number(item.end);
+                return !Number.isFinite(end) || end < cutoff;
+            });
+        }
+        normalizeSummaryPointers(state);
+        return removed;
+    }
+
+    async function reconcileChatStateAfterMutation(startIndex, reason = 'chat-mutation') {
+        const state = chatState();
+        if (!state) return;
+        const length = chatMessages().length;
+        const cutoff = Math.max(0, Math.min(Number(startIndex) || 0, length));
+        const removedSummaries = trimSummariesFrom(cutoff);
+        const rolledBackTables = await rollbackTableWritesFrom(cutoff, reason);
+        const previousTablePointer = Number(state.lastProcessed.table || 0);
+        state.lastProcessed.table = Math.min(previousTablePointer, Math.max(0, length - 1));
+        if (removedSummaries || rolledBackTables || state.lastProcessed.table !== previousTablePointer) {
+            await saveChat();
+            refreshMacros();
+            if (mounted) render();
         }
     }
 
@@ -2553,6 +2596,7 @@ ${allTablesText()}
         const updated = types.MESSAGE_UPDATED || 'message_updated';
         const edited = types.MESSAGE_EDITED || 'message_edited';
         const swiped = types.MESSAGE_SWIPED || 'message_swiped';
+        const deleted = types.MESSAGE_DELETED || 'message_deleted';
         const generationEnded = types.GENERATION_ENDED || 'generation_ended';
         const generationStopped = types.GENERATION_STOPPED || 'generation_stopped';
         source.on(received, onMessageReceived);
@@ -2560,12 +2604,15 @@ ${allTablesText()}
         source.on(updated, () => scheduleRealtimeConsume(250));
         source.on(edited, () => scheduleRealtimeConsume(250));
         source.on(swiped, () => scheduleRealtimeConsume(250));
+        source.on(deleted, async newLength => {
+            await reconcileChatStateAfterMutation(newLength, 'message-delete');
+        });
         source.on(generationEnded, () => scheduleRealtimeConsume(600));
         source.on(generationStopped, () => scheduleRealtimeConsume(600));
         source.on(ready, onPromptReady);
         source.on(changed, async () => {
             closeActiveModal(null);
-            await rollbackTableWritesFrom(chatMessages().length, 'chat-branch-or-reload');
+            await reconcileChatStateAfterMutation(chatMessages().length, 'chat-branch-or-reload');
             registerMacros();
             if (mounted) render();
         });
