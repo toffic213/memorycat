@@ -118,6 +118,61 @@
 只保留有更新的表和行。不要输出 JSON、Markdown 代码围栏、解释、项目符号或范例占位内容。`
     };
 
+    DEFAULT_PROMPTS.small = `你是严谨的逐楼层剧情记录员。你的任务是把本次提供的聊天楼层整理成可供后续续写使用的详细小总结。小总结的首要目标是完整、准确、可追溯，而不是短、漂亮或概括性强。除完全重复且没有任何新增信息的内容外，不得因为事件看起来琐碎、日常、轻松或“不重要”就删除、合并或一笔带过。不要把多个不同时间、不同人物、不同动作或不同话语揉成一句笼统结论。
+
+【范围与证据】
+只处理【本次聊天范围】中的楼层，以及在开关允许时提供的【已有小总结】。楼层编号是来源定位依据，必须优先保留。不得补写输入中没有的日期、时间、地点、动机、情绪、因果、身份或结果。聊天没有明确时钟时间时，不要伪造时刻；按楼层编号和先后顺序记录即可。明确出现的时间、日期、相对时间（例如“昨晚”“三天后”）、场景转换和顺序词都要保留，并说明它们对应的事件。若时间指代含糊，照实标为“时间未明确”，不要自行换算。
+
+【逐楼层核对】
+生成前必须从范围起点到终点逐条检查每个非空楼层，不得只看开头和结尾，不得跳过短消息、插话、确认、拒绝、玩笑、称呼、道歉、感谢、提醒、闲聊、重复提问或看似无关的生活细节。每条消息至少判断：说话者是谁；发生了什么动作或表达；对象是谁；发生地点或场景是否变化；是否出现具体时间、物品、称呼、约定、数字、选择、反应、后续安排或状态变化。对剧情理解、关系变化、人物记忆和后续连续性可能有帮助的细节，宁可具体记录，不得以“日常互动”“两人聊天”“气氛融洽”“事情顺利”等空泛短语代替。
+
+【对话与原话】
+清楚区分用户、角色以及其他明确说话者，不得把一方说的话写到另一方名下。重要对话尽可能保留短而关键的原话，尤其是承诺、请求、拒绝、条件、边界、解释、纠正、告白、威胁、约定、决定、称呼、独特措辞、明确数字和会影响后续理解的问答。原话应放在引号中并标注楼层；不要为了追求逐字记录而抄录冗长无关文本。无法确认逐字措辞时用准确转述，不能把转述伪装成原话。记录对话时要写清“谁对谁说了什么、对方如何回答、随后做了什么”，不能只留下结论。
+
+【细节记录范围】
+逐项保留本轮出现的：人物到达、离开、移动、停留、观察、触碰、递交、收取、使用或失去物品；衣着、外观、身体状况和即时状态的明确变化；吃喝、休息、出行、工作、学习、购物、整理、等待等日常小事；人物提出的问题、提供的信息、表达的偏好、作出的选择、改变的决定；地点和场景变化；关系中的亲近、疏远、信任、误会、冲突、和解及其具体依据；物品归属和位置；约定、计划、任务、承诺、期限、未完成事项；事件起因、过程、反应、结果和后续影响。细节较多时分点或分段展开，不要为了控制长度省略。
+
+【事实、感受与推断】
+明确说出的内容可以写成言语事实；明确发生的动作可以写成行为事实；人物亲口表达的感受应注明是谁的感受。只凭动作或语气猜测出的心理不得写成确定事实，可省略或标为“可能表现出……，但未明确说明”。人物没有回应不等于同意，沉默不等于拒绝，玩笑不等于承诺，计划不等于已经完成，提议不等于已经执行，愿望不等于事实。保留矛盾或前后修正：说明原先说法、之后由谁如何澄清，以及当前可确认的状态；无法解决的矛盾标明未确认。
+
+【已有小总结的使用】
+若提供已有小总结，将它作为背景和消歧依据，不要把旧内容误写成本轮新发生的事。重点记录本轮新增、变化、兑现、取消、纠正、再次确认和仍持续的事项；本轮没有再次提及的旧事实，不要伪装成新事件。若已有记录与本轮明确内容冲突，以本轮较新的明确事实更新，并简要保留状态变化链；不得悄悄删除仍影响后续理解的旧状态。若关闭了发送已有小总结的选项，就只依据聊天楼层，不得假装看过旧总结。
+
+【输出组织】
+只输出小总结正文，使用简体中文。按楼层顺序组织，可使用清晰的小标题或分段；每个事件尽可能注明楼层范围或关键楼层，例如“楼层 12：……”。同一连续场景可合并叙述，但必须保留其中每个有意义的动作、话语、反应与顺序；场景、日期或时间发生变化时另起段。建议依次记录场景与时间、逐楼层互动、重要原话、人物与关系变化、物品和状态变化、决定与未完成事项。内容量应与输入细节量相称：输入很多就充分展开，不能为了得到短输出而删减。不得添加开场白、总结说明、分析过程、Markdown代码围栏或输入以外的剧情。完成后复核每个楼层，确认没有遗漏小事、说话者、先后顺序、关键原话、数字、地点、物品状态和未完成事项。`;
+
+    DEFAULT_PROMPTS.big = `你是严谨的长期剧情档案整理员。你的任务是将【已有大总结】【待整合小总结】和【主线/支线表格】整理成一份连续、细致、清晰、可供后续续写的长期档案。本任务不读取原始聊天楼层，因此只能使用实际提供的总结和表格；绝对不能假称看见聊天原文，不能创造或还原小总结未记录的逐字原话。大总结不是把细节压成几句梗概，而是消除重复、理顺时间和状态，同时尽可能保留每一项仍可能影响续写的具体信息。
+
+【最高优先级】
+完整性高于简短。不得使用“之后发生了很多事”“两人日常相处”“关系逐渐升温”“经历一番波折”“诸多细节略”等说法替代已有具体内容。不得因为一件事规模小、只出现一次、看似普通或已经结束，就擅自删除其中有助于人物记忆、关系连续性、场景复现、物品追踪、承诺兑现、偏好判断或因果理解的内容。若输入篇幅很长，输出也必须足够详尽；宁可保留为清楚的分段档案，不得以“压缩”为由牺牲信息。
+
+【信息来源与可信度】
+只使用本次提供的材料。小总结中的楼层编号、时间和事件顺序是追溯线索；表格是结构化补充，不代表可以无视小总结。不得凭常识补日期、年龄、动机、关系定义、地点、规则或事件结果。明确事实、人物自述、他人转述、推测和未确认信息要区分表述。人物说“打算做”不能改写成“已经做了”；承诺、请求、计划、尝试、完成、失败、取消分别保留其状态。材料存在矛盾时，优先采用时间较晚且表达明确的更新，同时简述旧状态如何被纠正；若证据仍不足，标记“未确认”，不要强行裁定。
+
+【时间线与事件链】
+按时间先后建立连续时间线，尽可能保留明确日期、时刻、相对时间、楼层区间、场景转换和事件间隔。没有确切日期时保留原有相对顺序，不得编造日历日期。每项事件尽量写清发生背景、参与者、地点、起因、具体经过、关键言行、即时反应、结果、后续影响和仍未解决的问题。若同一场景内包含多件小事，分别记录并说明先后，不要合成一个模糊段落。重复事件可以合并，但要保留每次发生的差异、时间、参与者、结果及其意义，不能把多次互动误写成一次。
+
+【人物与关系连续性】
+对每个重要人物分别维护稳定信息和阶段性状态。记录其身份与称呼（仅限材料明确部分）、当前所在位置、明确的身体或情绪状态、已表达的偏好与边界、重要选择、行为习惯（有多次证据时）、知晓或尚未知晓的信息、对其他人的具体态度变化及导致变化的事件。关系变化必须有具体事件和言行支撑，不得只写“关系变好/变差”。分别记录双方如何表达、如何回应、是否兑现承诺、是否产生误会、由谁澄清、当前是否和解。不要把角色短暂表现当成永久性格，也不要把推断写成心理事实。
+
+【小事、对话与个人记忆】
+详细保留小总结中已记录的日常行为和具体互动，例如问候、玩笑、闲聊、照顾、等待、共同用餐、递还物品、临时改变计划、一次拒绝或一句安慰；它们可能构成人物熟悉感和关系发展的证据。保留有辨识度的称呼、短句、明确请求、拒绝、条件、承诺、边界、解释、纠正、约定和数字。若小总结引用了原话，尽量保留原话及其说话者和情境；若只有转述，只保留转述，不得擅自加引号伪装原句。重要问答要写清双方各自说了什么以及后续行动，不能只保留“达成共识”。
+
+【地点、物品、身体与状态】
+持续追踪重要地点、进入和离开、场景切换、物品名称、归属者、持有者、所在位置、交接过程、使用、损坏、遗失或归还。记录明确的身体状况、即时状态和变化过程；临时状态与长期属性分开，已恢复的状态标记恢复，不要继续写成当前状态。记录物品或信息何时首次出现、何时转移、目前可确认的归属和位置；未确认的部分明确说明。
+
+【主线、支线与待办】
+把表格中的主线和支线融入对应时间线，保留名称、相关人物、核心事件、因果、影响、当前状态、完成情况和下一步。区分主线推进与局部支线，不要把支线小事误判为无关。建立未完成事项清单，逐项说明提出者、目标、对象、期限或触发条件、当前进度、阻碍、责任人和下一步；完成、取消、失败或搁置时保留结果和原因，并从当前待办中移除或标记状态。未有明确后续的事项标为“后续未交代”，不得自行补结局。
+
+【去重与更新】
+合并重复表述时保留信息最完整的一版，但不可删掉只在另一条记录中出现的细节。更新事实时避免新旧状态并列造成误读：写清“此前状态—发生的变化—当前状态”。同一人物或物品的别名只有材料明确说明时才归并；身份不确定时不要合并实体。保留有意义的失败、撤回、改口和未兑现承诺，因为它们本身也是剧情事实。表格和文字不一致时指出可确认的最新状态，无法判定则标注冲突待核实。
+
+【推荐结构】
+使用简体中文和清晰标题组织档案，不必拘泥固定标题，但建议包含：一、故事当前时间与主要场景；二、按顺序排列的详细事件时间线；三、人物现状、关系变化与彼此已知信息；四、重要地点、物品及归属位置；五、主线与支线进展；六、承诺、计划、未完成事项和待确认问题。每条记录写成具体、可理解的完整句子，适当注明楼层或来源区间，避免堆砌无上下文的关键词。让未读过原始聊天的人也能据此理解事件怎样发生、谁做了什么、为什么状态改变、现在还有什么没有解决。
+
+【禁止事项与最终复核】
+不得续写剧情，不得扮演角色，不得评判人物，不得输出思考过程，不得凭空补全，不得隐藏冲突，不得把计划说成事实，不得将不同人物、不同事件或不同时间混淆。不得为了简短删掉有意义的小事，不得把详细过程缩写成主题标签或几句摘要。输出只包含整理后的大总结正文，不输出说明、寒暄或代码围栏。完成后逐条对照输入，确认每个小总结中的事件、具体言行、时间顺序、人物反应、物品状态、关系依据、主支线进度和待办去向都已保留，且没有增加来源之外的事实。`;
+
     const DEFAULT_SETTINGS = {
         api: {
             baseUrl: '',
@@ -134,6 +189,7 @@
             smallEvery: 6,
             bigEvery: 24,
             summaryDelay: 0,
+            smallIncludeExisting: true,
             tableEvery: 12,
             tableDelay: 0,
             tableMode: 'batch',
@@ -268,6 +324,7 @@
         next.auto.archiveMode = ['off', 'keepRecent', 'afterSummary'].includes(next.auto.archiveMode) ? next.auto.archiveMode : 'off';
         next.auto.keepVisible = Math.max(1, Number(next.auto.keepVisible) || 40);
         next.auto.summaryDelay = Math.max(0, Number(next.auto.summaryDelay) || 0);
+        next.auto.smallIncludeExisting = next.auto.smallIncludeExisting !== false;
         next.auto.tableDelay = Math.max(0, Number(next.auto.tableDelay) || 0);
         next.auto.excludeHidden = next.auto.excludeHidden !== false;
         next.auto.excludeTags = String(next.auto.excludeTags || '');
@@ -1058,7 +1115,11 @@ ${allTablesText()}
     }
 
     function buildPrompt(task, range) {
-        const existing = task === 'big' ? summaryText('big') : task === 'small' ? summaryText('small') : allTablesText();
+        const existing = task === 'big'
+            ? summaryText('big')
+            : task === 'small'
+                ? settings.auto.smallIncludeExisting ? summaryText('small') : ''
+                : allTablesText();
         const definition = tableDefinitionText();
         const plotGuide = '主线/支线填表补充：只记录能帮助后续续写的剧情脉络，不要拆成很细的任务卡。主线用于贯穿全局的大脉络，支线用于局部事件或人物小脉络。每条重点说清：相关人物、核心事件、时间、因果、影响、当前状态、是否完成、下一步。当前状态建议写未开始/进行中/暂停/受阻/完成；是否完成只写是/否。若事件结束、任务失败、线索关闭或关系后果明确，必须同步更新当前状态和是否完成。字段为空且本次出现可靠信息时补上；已有字段本次没有变化不要重复。输出可用：#主线\\n[主线主键]|主线名称：...|相关人物：...|核心事件：...|时间：...|因果：...|影响：...|当前状态：进行中|是否完成：否|下一步：...；或 #支线\\n[支线主键]|支线名称：...|相关人物：...|核心事件：...|时间：...|因果：...|影响：...|当前状态：受阻|是否完成：否|下一步：...。';
         if (task === 'batch') {
@@ -1070,7 +1131,10 @@ ${allTablesText()}
             return `${settings.prompts.big}\n\n【本次整合范围】\n楼层 ${range.start}-${range.end}\n\n【已有大总结】\n${summaryText('big') || '（暂无）'}\n\n【待整合小总结】\n${smallSource || '（本范围内暂无完整小总结）'}\n\n【主线/支线表格】\n${plotTablesText() || '（暂无记录）'}`;
         }
         const source = chatText(range.start, range.end);
-        return `${settings.prompts[task]}\n\n【已有${task === 'big' ? '大' : '小'}总结】\n${existing || '（暂无）'}\n\n【本次聊天范围】\n${source || '（空）'}`;
+        const existingSection = task === 'small' && !settings.auto.smallIncludeExisting
+            ? ''
+            : `\n\n【已有${task === 'big' ? '大' : '小'}总结】\n${existing || '（暂无）'}`;
+        return `${settings.prompts[task]}${existingSection}\n\n【本次聊天范围】\n${source || '（空）'}`;
     }
 
     function apiCandidates() {
@@ -1502,7 +1566,7 @@ ${allTablesText()}
         const taskLabel = task === 'batch' ? '批量填表' : task === 'big' ? '大总结' : '小总结';
         if (settings.auto.confirmBeforeRun && !hostWindow.confirm(`记忆喵准备对楼层 ${range.start}-${range.end} 执行「${taskLabel}」，要继续吗？`)) {
             setStatus('已取消本次整理', 'warn');
-            return;
+            return false;
         }
         try {
             while (true) {
@@ -1512,12 +1576,12 @@ ${allTablesText()}
                     const preview = applyBatch(result, true);
                     if (!preview.length) {
                         setStatus('没有解析到可写入的表格更新', 'warn');
-                        return;
+                        return false;
                     }
                     if (options.auto && !settings.auto.autoApplyTable) {
                         await storePendingBatch(result, range);
                         setStatus(`已暂存 ${preview.length} 条表格更新`, 'ok');
-                        return;
+                        return true;
                     }
                     const accepted = !settings.auto.confirmBeforeWrite || await confirmDialog(
                         `写入 ${preview.length} 条表格记录？`,
@@ -1530,7 +1594,7 @@ ${allTablesText()}
                     }
                     if (!accepted) {
                         setStatus('已取消写入', 'warn');
-                        return;
+                        return false;
                     }
                     applyBatch(result, false, { mode: 'batch', range, source: options.auto ? 'auto' : 'manual' });
                     chatState().pendingBatch = '';
@@ -1539,7 +1603,7 @@ ${allTablesText()}
                     refreshMacros();
                     render();
                     setStatus(`已更新 ${preview.length} 条表格记录`, 'ok');
-                    return;
+                    return true;
                 }
                 const cleaned = extractMemory(result);
                 const state = chatState();
@@ -1551,7 +1615,7 @@ ${allTablesText()}
                 }
                 if (accepted === null) {
                     setStatus('已取消写入', 'warn');
-                    return;
+                    return false;
                 }
                 const key = task === 'big' ? 'bigSegments' : 'smallSegments';
                 state[key] ||= [];
@@ -1578,11 +1642,12 @@ ${allTablesText()}
                 render();
                 const archiveText = prunedSmall ? `，已归档 ${prunedSmall} 条小总结` : '';
                 setStatus(hidden ? `${label}已保存${archiveText}，已隐藏 ${hidden} 楼` : `${label}已保存${archiveText}`, 'ok');
-                return;
+                return true;
             }
         } catch (error) {
             console.warn(`[${PLUGIN_ID}] request failed`, error);
             setStatus(error?.name === 'AbortError' ? '请求已取消' : `失败：${error.message}`, 'error');
+            return false;
         }
     }
 
@@ -1693,6 +1758,7 @@ ${allTablesText()}
                         <label>小总结每<input data-mc-setting="auto.smallEvery" type="number" min="1" value="${settings.auto.smallEvery}">楼</label>
                         <label>大总结每<input data-mc-setting="auto.bigEvery" type="number" min="1" value="${settings.auto.bigEvery}">楼</label>
                         <label>延迟<input data-mc-setting="auto.summaryDelay" type="number" min="0" value="${settings.auto.summaryDelay}">楼后启动总结</label>
+                        <label class="mc-check"><input data-mc-setting="auto.smallIncludeExisting" type="checkbox" ${settings.auto.smallIncludeExisting ? 'checked' : ''}>小总结时发送已有小总结</label>
                         <label class="mc-check"><input data-mc-setting="auto.excludeHidden" type="checkbox" ${settings.auto.excludeHidden ? 'checked' : ''}>跳过已隐藏楼层</label>
                         <label class="mc-check"><input data-mc-setting="auto.confirmBeforeRun" type="checkbox" ${settings.auto.confirmBeforeRun ? 'checked' : ''}>运行前询问</label>
                         <label class="mc-check"><input data-mc-setting="auto.confirmBeforeWrite" type="checkbox" ${settings.auto.confirmBeforeWrite ? 'checked' : ''}>写入前询问</label>
@@ -2541,35 +2607,37 @@ ${allTablesText()}
         const length = chatMessages().length;
         if (!state || !length) return;
         normalizeSummaryPointers(state);
-        const summaryReady = length >= Math.max(0, Number(settings.auto.summaryDelay) || 0);
+        const summaryDelay = Math.max(0, Number(settings.auto.summaryDelay) || 0);
         const tableReady = length >= Math.max(0, Number(settings.auto.tableDelay) || 0);
-        const pendingSmall = length - Number(state.lastProcessed.small || 0);
-        const pendingBig = length - Number(state.lastProcessed.big || 0);
         const pendingTable = length - Number(state.lastProcessed.table || 0);
         const since = value => {
             const last = Number(value);
-            return Number.isFinite(last) && last > 0 ? Math.min(length - 1, last + 1) : 0;
+            return Number.isFinite(last) && last > 0 ? last + 1 : 0;
         };
         autoBusy = true;
         try {
-            let summarizedStart = null;
+            const summarizedRanges = [];
             if (settings.auto.enabled) {
-                if (summaryReady && pendingSmall >= Math.max(1, Number(settings.auto.smallEvery) || 6)) {
-                    const range = { start: since(state.lastProcessed.small), end: length - 1 };
-                    summarizedStart = summarizedStart === null ? range.start : Math.min(summarizedStart, range.start);
-                    await summarize('small', { auto: true, skipArchive: true, range });
-                }
-                if (summaryReady && pendingBig >= Math.max(1, Number(settings.auto.bigEvery) || 24)) {
-                    const range = { start: since(state.lastProcessed.big), end: length - 1 };
-                    summarizedStart = summarizedStart === null ? range.start : Math.min(summarizedStart, range.start);
-                    await summarize('big', { auto: true, skipArchive: true, range });
+                for (const task of ['small', 'big']) {
+                    const interval = Math.max(1, Number(settings.auto[`${task}Every`]) || (task === 'small' ? 6 : 24));
+                    while (true) {
+                        const pointer = Number(state.lastProcessed[task] || 0);
+                        const range = { start: since(pointer), end: since(pointer) + interval - 1 };
+                        if (chatMessages().length < range.end + 1 + summaryDelay) break;
+                        const succeeded = await summarize(task, { auto: true, skipArchive: true, range });
+                        if (!succeeded) break;
+                        summarizedRanges.push(range);
+                    }
                 }
                 if (tableReady && batchTableMode() && pendingTable >= Math.max(1, Number(settings.auto.tableEvery) || 12)) {
                     await summarize('batch', { auto: true, range: { start: since(state.lastProcessed.table), end: length - 1 } });
                 }
             }
-            if (settings.auto.archiveMode === 'afterSummary' && summarizedStart !== null) {
-                const hidden = await hideMessageRange(summarizedStart, length - 1);
+            if (settings.auto.archiveMode === 'afterSummary' && summarizedRanges.length) {
+                let hidden = 0;
+                for (const range of summarizedRanges) {
+                    hidden += await hideMessageRange(range.start, range.end);
+                }
                 if (hidden && mounted) {
                     render();
                     setStatus(`自动总结完成，已隐藏 ${hidden} 个已总结楼层`, 'ok');
