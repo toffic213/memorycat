@@ -398,12 +398,11 @@
         return true;
     }
 
-    function applySchemePreset(name, { includeAuto = false } = {}) {
+    function applySchemePreset(name) {
         const preset = settings.schemePresets.find(item => item.name === name);
         if (!preset) return false;
         settings.prompts = { ...settings.prompts, ...clone(preset.prompts || {}) };
         settings.tableDefinitions = clone(preset.tableDefinitions || settings.tableDefinitions);
-        if (includeAuto) settings.auto = { ...settings.auto, ...clone(preset.auto || {}) };
         settings.activeSchemePreset = name;
         settings = mergeSettings(settings);
         return true;
@@ -1826,10 +1825,10 @@ ${allTablesText()}
                         <section class="mc-setting-group">
                             <div class="mc-setting-title">自动总结</div>
                             <div class="mc-setting-grid">
-                                <label class="mc-check"><input data-mc-setting="auto.enabled" type="checkbox" ${settings.auto.enabled ? 'checked' : ''}>启用自动总结</label>
-                                <label>小总结间隔<input data-mc-setting="auto.smallEvery" type="number" min="1" value="${settings.auto.smallEvery}"><span>楼</span></label>
-                                <label>大总结间隔<input data-mc-setting="auto.bigEvery" type="number" min="1" value="${settings.auto.bigEvery}"><span>楼</span></label>
-                                <label>启动延迟<input data-mc-setting="auto.summaryDelay" type="number" min="0" value="${settings.auto.summaryDelay}"><span>楼</span></label>
+                                <label class="mc-check mc-strong-setting"><input data-mc-setting="auto.enabled" type="checkbox" ${settings.auto.enabled ? 'checked' : ''}>启用自动总结</label>
+                                <label><span>小总结</span><input data-mc-setting="auto.smallEvery" type="number" min="1" value="${settings.auto.smallEvery}"><em>楼</em></label>
+                                <label><span>大总结</span><input data-mc-setting="auto.bigEvery" type="number" min="1" value="${settings.auto.bigEvery}"><em>楼</em></label>
+                                <label><span>延迟</span><input data-mc-setting="auto.summaryDelay" type="number" min="0" value="${settings.auto.summaryDelay}"><em>楼</em></label>
                             </div>
                         </section>
                         <section class="mc-setting-group">
@@ -1837,7 +1836,7 @@ ${allTablesText()}
                             <div class="mc-setting-grid">
                                 <label class="mc-check"><input data-mc-setting="auto.smallIncludeExisting" type="checkbox" ${settings.auto.smallIncludeExisting ? 'checked' : ''}>发送已有小总结</label>
                                 <label class="mc-check"><input data-mc-setting="auto.excludeHidden" type="checkbox" ${settings.auto.excludeHidden ? 'checked' : ''}>跳过已隐藏楼层</label>
-                                <label class="mc-wide-setting">排除标签<input data-mc-setting="auto.excludeTags" value="${esc(settings.auto.excludeTags)}" placeholder="thinking, status"></label>
+                                <label class="mc-wide-setting"><span>排除标签</span><input data-mc-setting="auto.excludeTags" value="${esc(settings.auto.excludeTags)}" placeholder="thinking, status"></label>
                             </div>
                         </section>
                         <section class="mc-setting-group">
@@ -1867,21 +1866,15 @@ ${allTablesText()}
                     </div>
                     ${archiveMode === 'keepRecent' ? `
                         <div class="mc-action-row mc-tight-row">
-                            <label class="mc-inline-setting">保留最近<input data-mc-setting="auto.keepVisible" type="number" min="1" value="${settings.auto.keepVisible}">个可见楼层</label>
+                            <label class="mc-inline-setting"><span>保留最近</span><input data-mc-setting="auto.keepVisible" type="number" min="1" value="${settings.auto.keepVisible}"><em>个可见楼层</em></label>
                             <button data-mc-action="compact-now">立即收纳旧楼层</button>
                         </div>
                     ` : ''}
                     <div class="mc-note">当前可见 ${visibleCount} 楼，已隐藏 ${hiddenCount} 楼。跳过隐藏楼层只会跳过手动隐藏/小剧场；记忆喵为压缩上下文收纳的旧楼层仍会参与总结。</div>
                 </details>
-                <div class="mc-summary-grid mc-summary-strip">
-                    <article class="mc-summary-block">
-                        <div class="mc-block-head"><span>大总结</span><span>${summarySegments('big').length} 条</span></div>
-                        <label class="mc-pointer-line">指针 <input data-mc-pointer="big" type="number" min="0" value="${Number(state.lastProcessed.big || 0)}"></label>
-                    </article>
-                    <article class="mc-summary-block">
-                        <div class="mc-block-head"><span>小总结</span><span>${summarySegments('small').length} 条</span></div>
-                        <label class="mc-pointer-line">指针 <input data-mc-pointer="small" type="number" min="0" value="${Number(state.lastProcessed.small || 0)}"></label>
-                    </article>
+                <div class="mc-pointer-strip">
+                    <label><strong>大总结</strong><span>${summarySegments('big').length} 条</span><em>指针</em><input data-mc-pointer="big" type="number" min="0" value="${Number(state.lastProcessed.big || 0)}"></label>
+                    <label><strong>小总结</strong><span>${summarySegments('small').length} 条</span><em>指针</em><input data-mc-pointer="small" type="number" min="0" value="${Number(state.lastProcessed.small || 0)}"></label>
                 </div>
                 ${state.pendingBatch ? `
                     <div class="mc-pending">
@@ -2012,8 +2005,7 @@ ${allTablesText()}
             <section class="mc-section">
                 <details class="mc-fold" open>
                     <summary><span>填表控制</span><em>不填表 / 批量 / 实时</em></summary>
-                    <div class="mc-mode-picker">
-                        <span class="mc-field-caption">填表模式</span>
+                    <div class="mc-mode-picker mc-compact-mode">
                         <label class="${mode === 'off' ? 'is-selected' : ''}">
                             <input data-mc-setting="auto.tableMode" type="radio" name="memory-cat-table-mode" value="off" ${mode === 'off' ? 'checked' : ''}>
                             <strong>不填表</strong><small>只总结，不自动整理表格</small>
@@ -2028,9 +2020,9 @@ ${allTablesText()}
                         </label>
                     </div>
                     ${mode !== 'off' ? `
-                        <div class="mc-compact-grid">
-                            ${mode === 'batch' ? `<label>批量每<input data-mc-setting="auto.tableEvery" type="number" min="1" value="${settings.auto.tableEvery}">楼</label>` : ''}
-                            <label>延迟<input data-mc-setting="auto.tableDelay" type="number" min="0" value="${settings.auto.tableDelay}">楼后启动填表</label>
+                        <div class="mc-setting-grid mc-table-settings">
+                            ${mode === 'batch' ? `<label><span>批量间隔</span><input data-mc-setting="auto.tableEvery" type="number" min="1" value="${settings.auto.tableEvery}"><em>楼</em></label>` : ''}
+                            <label><span>填表延迟</span><input data-mc-setting="auto.tableDelay" type="number" min="0" value="${settings.auto.tableDelay}"><em>楼</em></label>
                             <label class="mc-check"><input data-mc-setting="auto.autoApplyTable" type="checkbox" ${settings.auto.autoApplyTable ? 'checked' : ''}>自动写入表格</label>
                             ${mode === 'realtime' ? `<label class="mc-check"><input data-mc-setting="auto.injectRealtime" type="checkbox" ${settings.auto.injectRealtime ? 'checked' : ''}>自动注入实时提示词</label>` : ''}
                         </div>
@@ -2470,7 +2462,6 @@ ${allTablesText()}
                 name,
                 prompts: clone(settings.prompts),
                 tableDefinitions: clone(settings.tableDefinitions),
-                auto: clone(settings.auto),
                 createdAt: new Date().toISOString()
             };
             settings.schemePresets = settings.schemePresets.filter(item => item.name !== name).concat(preset);
@@ -2482,7 +2473,7 @@ ${allTablesText()}
         }
         if (action === 'load-scheme-preset') {
             const name = hostDocument.querySelector('#memory-cat-scheme-preset-select')?.value;
-            if (!applySchemePreset(name, { includeAuto: true })) return setStatus('没有选中总结方案', 'warn');
+            if (!applySchemePreset(name)) return setStatus('没有选中总结方案', 'warn');
             saveSettings();
             render();
             setStatus('总结方案已读取', 'ok');

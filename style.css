@@ -391,8 +391,47 @@
 }
 
 #memory-cat-drawer input {
-    min-height: 27px;
-    padding: 3px 7px;
+    min-height: 24px;
+    padding: 2px 6px;
+}
+
+#memory-cat-drawer .mc-pointer-strip {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 8px 0 10px;
+    padding: 7px 0;
+    border-top: 1px solid var(--mc-heavy-line);
+    border-bottom: 1px solid var(--mc-line);
+    font-family: Arial, "Noto Sans SC", sans-serif;
+}
+
+#memory-cat-drawer .mc-pointer-strip label {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    min-height: 28px;
+    padding: 2px 8px;
+    border-left: 3px solid var(--mc-heavy-line);
+    background: rgba(255, 255, 255, 0.28);
+    color: var(--mc-soft-ink);
+    font-size: 0.7rem;
+}
+
+#memory-cat-drawer .mc-pointer-strip strong {
+    color: var(--mc-ink);
+    font-size: 0.76rem;
+    letter-spacing: 0.04em;
+}
+
+#memory-cat-drawer .mc-pointer-strip em {
+    font-style: normal;
+}
+
+#memory-cat-drawer .mc-pointer-strip input {
+    width: 64px;
+    min-height: 23px;
+    font-family: Arial, sans-serif;
 }
 
 #memory-cat-drawer .mc-range {
@@ -496,29 +535,31 @@
 
 #memory-cat-drawer .mc-common-settings {
     display: grid;
-    gap: 10px;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 8px;
     padding: 5px 0 8px;
 }
 
 #memory-cat-drawer .mc-setting-group {
-    padding: 10px;
-    border: 1px solid rgba(17, 17, 17, 0.16);
-    background: rgba(255, 255, 255, 0.24);
+    min-width: 0;
+    padding: 7px 8px 8px;
+    border-left: 3px solid var(--mc-heavy-line);
+    background: rgba(255, 255, 255, 0.22);
 }
 
 #memory-cat-drawer .mc-setting-title {
-    margin-bottom: 8px;
+    margin-bottom: 6px;
     color: var(--mc-ink);
     font-family: Arial, "Noto Sans SC", sans-serif;
-    font-size: 0.74rem;
+    font-size: 0.76rem;
     font-weight: 700;
-    letter-spacing: 0.08em;
+    letter-spacing: 0.06em;
 }
 
 #memory-cat-drawer .mc-setting-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(165px, 1fr));
-    gap: 8px;
+    grid-template-columns: repeat(auto-fit, minmax(124px, 1fr));
+    gap: 5px 7px;
 }
 
 #memory-cat-drawer .mc-setting-grid label {
@@ -529,22 +570,30 @@
     min-width: 0;
     color: var(--mc-soft-ink);
     font-family: Arial, "Noto Sans SC", sans-serif;
-    font-size: 0.7rem;
+    font-size: 0.68rem;
 }
 
 #memory-cat-drawer .mc-setting-grid label:not(.mc-check) {
     display: grid;
-    grid-template-columns: minmax(72px, max-content) 72px auto;
+    grid-template-columns: minmax(48px, max-content) 56px auto;
+    align-items: center;
+}
+
+#memory-cat-drawer .mc-setting-grid label > span,
+#memory-cat-drawer .mc-inline-setting span {
+    color: var(--mc-ink);
+    font-weight: 700;
 }
 
 #memory-cat-drawer .mc-setting-grid input[type="number"] {
-    width: 72px;
-    min-height: 24px;
+    width: 56px;
+    min-height: 23px;
+    font-family: Arial, sans-serif;
 }
 
 #memory-cat-drawer .mc-setting-grid .mc-wide-setting {
     grid-column: 1 / -1;
-    grid-template-columns: minmax(72px, max-content) minmax(180px, 1fr);
+    grid-template-columns: minmax(64px, max-content) minmax(130px, 1fr);
 }
 
 #memory-cat-drawer .mc-setting-grid .mc-wide-setting input {
@@ -554,6 +603,10 @@
 #memory-cat-drawer .mc-common-settings .mc-archive-picker {
     grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
     margin-top: 0;
+}
+
+#memory-cat-drawer .mc-strong-setting {
+    font-weight: 700;
 }
 
 #memory-cat-drawer .mc-log-panel {
@@ -667,7 +720,7 @@
 #memory-cat-drawer .mc-form-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-    gap: 7px 9px;
+    gap: 6px 8px;
 }
 
 #memory-cat-drawer .mc-form-grid .mc-wide-setting {
@@ -685,6 +738,24 @@
     font-size: 0.7rem;
 }
 
+#memory-cat-drawer .mc-form-grid label,
+#memory-cat-drawer .mc-schema-editor label,
+#memory-cat-drawer .mc-preset-row label,
+#memory-cat-drawer .mc-prompt-label {
+    color: var(--mc-ink);
+    font-weight: 700;
+}
+
+#memory-cat-drawer .mc-form-grid input,
+#memory-cat-drawer .mc-form-grid select,
+#memory-cat-drawer .mc-schema-editor input,
+#memory-cat-drawer .mc-schema-editor textarea,
+#memory-cat-drawer .mc-preset-row input,
+#memory-cat-drawer .mc-preset-row select {
+    color: var(--mc-ink);
+    font-weight: 400;
+}
+
 #memory-cat-drawer .mc-form-grid label.mc-check {
     flex-direction: row;
     align-items: center;
@@ -700,7 +771,7 @@
 }
 
 #memory-cat-drawer .mc-archive-picker {
-    grid-template-columns: 82px repeat(auto-fit, minmax(138px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
 }
 
 #memory-cat-drawer .mc-field-caption {
@@ -716,8 +787,8 @@
     grid-template-columns: auto 1fr;
     column-gap: 8px;
     align-content: center;
-    min-height: 38px;
-    padding: 5px 7px;
+    min-height: 32px;
+    padding: 4px 7px;
     border: 1px solid var(--mc-line);
     background: rgba(255, 255, 255, 0.32);
     cursor: pointer;
@@ -753,13 +824,13 @@
 }
 
 #memory-cat-drawer .mc-mode-picker strong {
-    font-size: 0.76rem;
+    font-size: 0.72rem;
 }
 
 #memory-cat-drawer .mc-mode-picker small {
     margin-top: 1px;
     color: var(--mc-soft-ink);
-    font-size: 0.64rem;
+    font-size: 0.61rem;
     line-height: 1.35;
 }
 
@@ -781,10 +852,6 @@
     margin: 6px 0 2px;
 }
 
-#memory-cat-drawer .mc-inline-setting input[type="number"] {
-    width: 78px;
-}
-
 #memory-cat-drawer .mc-schema-editor {
     display: grid;
     grid-template-columns: minmax(150px, 0.7fr) minmax(0, 2fr);
@@ -794,19 +861,29 @@
 
 #memory-cat-drawer .mc-preset-row {
     display: grid;
-    grid-template-columns: minmax(130px, 1fr) minmax(130px, 1fr) repeat(3, minmax(54px, auto));
+    grid-template-columns: minmax(120px, 1fr) minmax(120px, 1fr) repeat(3, minmax(48px, auto));
     gap: 6px;
     align-items: end;
-    margin-top: 8px;
-    padding-top: 7px;
-    border-top: 1px solid var(--mc-line);
+    margin-top: 7px;
+    padding: 7px 0;
+    border-top: 1px solid rgba(17, 17, 17, 0.22);
+}
+
+#memory-cat-drawer .mc-inline-setting input[type="number"] {
+    width: 62px;
+    min-height: 23px;
+}
+
+#memory-cat-drawer .mc-inline-setting em,
+#memory-cat-drawer .mc-setting-grid em {
+    font-style: normal;
 }
 
 #memory-cat-drawer .mc-preset-row label {
     display: flex;
     flex-direction: column;
-    gap: 6px;
-    color: var(--mc-soft-ink);
+    gap: 4px;
+    color: var(--mc-ink);
     font-family: Arial, "Noto Sans SC", sans-serif;
     font-size: 0.7rem;
 }
