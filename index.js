@@ -276,6 +276,13 @@
         return ctx?.eventTypes || ctx?.event_types || hostWindow.event_types || {};
     }
 
+    function extensionSettingsBag(ctx = getContext()) {
+        return ctx?.extensionSettings
+            || ctx?.extension_settings
+            || hostWindow.extension_settings
+            || null;
+    }
+
     async function loadTavernRegex() {
         if (tavernRegex) return tavernRegex;
         try {
@@ -322,12 +329,16 @@
         next.auto.confirmBeforeWrite = next.auto.confirmBeforeWrite !== false;
         next.auto.rollbackBranchWrites = next.auto.rollbackBranchWrites !== false;
         next.auto.archiveMode = ['off', 'keepRecent', 'afterSummary'].includes(next.auto.archiveMode) ? next.auto.archiveMode : 'off';
+        next.auto.smallEvery = Math.max(1, Number(next.auto.smallEvery) || DEFAULT_SETTINGS.auto.smallEvery);
+        next.auto.bigEvery = Math.max(1, Number(next.auto.bigEvery) || DEFAULT_SETTINGS.auto.bigEvery);
         next.auto.keepVisible = Math.max(1, Number(next.auto.keepVisible) || 40);
         next.auto.summaryDelay = Math.max(0, Number(next.auto.summaryDelay) || 0);
+        next.auto.tableEvery = Math.max(1, Number(next.auto.tableEvery) || DEFAULT_SETTINGS.auto.tableEvery);
         next.auto.smallIncludeExisting = next.auto.smallIncludeExisting !== false;
         next.auto.tableDelay = Math.max(0, Number(next.auto.tableDelay) || 0);
         next.auto.excludeHidden = next.auto.excludeHidden !== false;
         next.auto.excludeTags = String(next.auto.excludeTags || '');
+        next._savedAt = Number(raw._savedAt || 0) || 0;
         next.prompts = { ...next.prompts, ...(raw.prompts || {}) };
         if (!String(next.prompts.header || '').includes('记忆喵破限整理协议')) next.prompts.header = DEFAULT_PROMPTS.header;
         if (String(raw.prompts?.batch || '').includes('表名 | [主键] | 字段：更新内容')) next.prompts.batch = DEFAULT_PROMPTS.batch;
@@ -418,8 +429,12 @@
         try {
             const local = JSON.parse(hostWindow.localStorage.getItem(STORAGE_KEY) || 'null');
             const ctx = getContext();
-            const tavern = ctx?.extensionSettings?.[PLUGIN_ID] || hostWindow.extension_settings?.[PLUGIN_ID];
-            const merged = mergeSettings({ ...(tavern || {}), ...(local || {}) });
+            const tavern = extensionSettingsBag(ctx)?.[PLUGIN_ID];
+            const localTime = Number(local?._savedAt || 0);
+            const tavernTime = Number(tavern?._savedAt || 0);
+            const primary = tavernTime > localTime ? tavern : local;
+            const secondary = tavernTime > localTime ? local : tavern;
+            const merged = mergeSettings({ ...(secondary || {}), ...(primary || {}) });
             const presets = loadPresetStore();
             merged.apiPresets = mergePresetLists(tavern?.apiPresets, local?.apiPresets, presets.apiPresets);
             merged.schemePresets = mergePresetLists(tavern?.schemePresets, local?.schemePresets, presets.schemePresets);
@@ -438,9 +453,13 @@
     async function persistTavernSettings(snapshot) {
         try {
             const ctx = getContext();
+            const bag = extensionSettingsBag(ctx);
+            if (bag) bag[PLUGIN_ID] = snapshot;
             if (ctx?.extensionSettings) ctx.extensionSettings[PLUGIN_ID] = snapshot;
+            if (ctx?.extension_settings) ctx.extension_settings[PLUGIN_ID] = snapshot;
             if (hostWindow.extension_settings) hostWindow.extension_settings[PLUGIN_ID] = snapshot;
             const api = await loadTavernSettingsApi();
+            if (Number(snapshot._savedAt || 0) < Number(settings?._savedAt || 0)) return;
             if (api.extensionSettings) api.extensionSettings[PLUGIN_ID] = snapshot;
             const save = api.saveSettingsDebounced || ctx?.saveSettingsDebounced || hostWindow.saveSettingsDebounced;
             if (typeof save === 'function') save();
@@ -450,6 +469,7 @@
     }
 
     function saveSettings() {
+        settings._savedAt = Date.now();
         const snapshot = clone(settings);
         try {
             hostWindow.localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot));
@@ -462,8 +482,10 @@
         }
         try {
             const ctx = getContext();
-            const bag = ctx?.extensionSettings || hostWindow.extension_settings;
+            const bag = extensionSettingsBag(ctx);
             if (bag) bag[PLUGIN_ID] = snapshot;
+            if (ctx?.extensionSettings) ctx.extensionSettings[PLUGIN_ID] = snapshot;
+            if (ctx?.extension_settings) ctx.extension_settings[PLUGIN_ID] = snapshot;
             const save = ctx?.saveSettingsDebounced || hostWindow.saveSettingsDebounced;
             if (typeof save === 'function') save();
         } catch (error) {
@@ -476,7 +498,11 @@
         const api = await loadTavernSettingsApi();
         const stored = api.extensionSettings?.[PLUGIN_ID];
         if (!stored || typeof stored !== 'object') return;
-        const merged = mergeSettings({ ...stored, ...settings });
+        const storedTime = Number(stored._savedAt || 0);
+        const currentTime = Number(settings?._savedAt || 0);
+        const merged = storedTime > currentTime
+            ? mergeSettings({ ...settings, ...stored })
+            : mergeSettings({ ...stored, ...settings });
         merged.apiPresets = mergePresetLists(stored.apiPresets, settings.apiPresets);
         merged.schemePresets = mergePresetLists(stored.schemePresets, settings.schemePresets);
         settings = merged;
