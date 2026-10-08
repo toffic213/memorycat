@@ -301,6 +301,7 @@
                 import('/script.js').catch(() => ({}))
             ]).then(([extensions, script]) => ({
                 extensionSettings: extensions.extension_settings,
+                saveSettings: script.saveSettings,
                 saveSettingsDebounced: script.saveSettingsDebounced
             })).catch(error => {
                 console.warn(`[${PLUGIN_ID}] settings module import failed`, error);
@@ -492,6 +493,26 @@
             console.warn(`[${PLUGIN_ID}] settings save failed`, error);
         }
         persistTavernSettings(snapshot);
+    }
+
+    async function saveSettingsNow() {
+        saveSettings();
+        const snapshot = clone(settings);
+        const ctx = getContext();
+        const bag = extensionSettingsBag(ctx);
+        if (bag) bag[PLUGIN_ID] = snapshot;
+        if (ctx?.extensionSettings) ctx.extensionSettings[PLUGIN_ID] = snapshot;
+        if (ctx?.extension_settings) ctx.extension_settings[PLUGIN_ID] = snapshot;
+        if (hostWindow.extension_settings) hostWindow.extension_settings[PLUGIN_ID] = snapshot;
+        const api = await loadTavernSettingsApi();
+        if (api.extensionSettings) api.extensionSettings[PLUGIN_ID] = snapshot;
+        const immediateSave = api.saveSettings || ctx?.saveSettings || hostWindow.saveSettings;
+        if (typeof immediateSave === 'function') await immediateSave();
+        else {
+            const debouncedSave = api.saveSettingsDebounced || ctx?.saveSettingsDebounced || hostWindow.saveSettingsDebounced;
+            if (typeof debouncedSave === 'function') debouncedSave();
+        }
+        return snapshot;
     }
 
     async function hydrateSettingsFromTavern() {
@@ -1995,13 +2016,13 @@ ${allTablesText()}
                     <summary><span>独立 API</span><em>模型 / 连接 / 预设</em></summary>
                     <div class="mc-action-row mc-tight-row"><button data-mc-action="fetch-models">获取模型</button><button data-mc-action="test-api">测试连接</button></div>
                     <div class="mc-form-grid">
-                        <label>Base URL<input data-mc-setting="api.baseUrl" value="${esc(settings.api.baseUrl)}" placeholder="https://example.com/v1"></label>
-                        <label>API Key<input data-mc-setting="api.apiKey" type="password" value="${esc(settings.api.apiKey)}"></label>
-                        <label>模型下拉<select data-mc-setting="api.model">
+                        <label class="mc-wide-setting">Base URL<input data-mc-setting="api.baseUrl" value="${esc(settings.api.baseUrl)}" placeholder="https://example.com/v1"></label>
+                        <label class="mc-wide-setting">API Key<input data-mc-setting="api.apiKey" type="password" value="${esc(settings.api.apiKey)}"></label>
+                        <label class="mc-wide-setting">模型下拉<select data-mc-setting="api.model">
                             <option value="">手动填写 / 未选择</option>
                             ${(settings.api.models || []).map(model => `<option value="${esc(model)}" ${settings.api.model === model ? 'selected' : ''}>${esc(model)}</option>`).join('')}
                         </select></label>
-                        <label>模型手填<input data-mc-setting="api.model" value="${esc(settings.api.model)}" placeholder="模型名称"></label>
+                        <label class="mc-wide-setting">模型手填<input data-mc-setting="api.model" value="${esc(settings.api.model)}" placeholder="模型名称"></label>
                         <label>温度<input data-mc-setting="api.temperature" type="number" min="0" max="2" step="0.05" value="${settings.api.temperature}"></label>
                         <label>最大输出<input data-mc-setting="api.maxTokens" type="number" min="128" max="16000" value="${settings.api.maxTokens}"></label>
                         <label>超时毫秒<input data-mc-setting="api.timeout" type="number" min="5000" max="300000" value="${settings.api.timeout}"></label>
@@ -2069,9 +2090,18 @@ ${allTablesText()}
             <nav class="mc-tabs">
                 ${Object.entries({ overview: '总览', library: '总结库', tables: '表格', variables: '变量', settings: '设置' }).map(([key, label]) => `<button class="${activeTab === key ? 'is-active' : ''}" data-mc-tab="${key}">${label}</button>`).join('')}
             </nav>
+            <div class="mc-save-strip">
+                <button class="mc-primary" data-mc-action="save-settings">保存设置</button>
+                <span>更改会自动暂存；点这里强制写入酒馆设置</span>
+            </div>
             ${tabs[activeTab] || tabs.overview}
         `;
         registerMacros();
+    }
+
+    function scrollDrawerToTop(root = hostDocument.getElementById(ROOT_ID)) {
+        const drawer = root?.querySelector('.mc-drawer-content');
+        if (drawer) drawer.scrollTop = 0;
     }
 
     function mount() {
@@ -2113,6 +2143,7 @@ ${allTablesText()}
             $drawer.toggleClass('openDrawer closedDrawer');
             if (wasOpen) closeActiveModal(null);
             render();
+            if (!wasOpen) scrollDrawerToTop(root);
         });
         root.addEventListener('click', onClick);
         root.addEventListener('input', onInput);
@@ -2250,10 +2281,22 @@ ${allTablesText()}
         if (button.dataset.mcTab) {
             activeTab = button.dataset.mcTab;
             render();
+            scrollDrawerToTop();
             return;
         }
         const action = button.dataset.mcAction;
         if (action === 'refresh') return render();
+        if (action === 'save-settings') {
+            setStatus('正在保存设置...', 'busy');
+            try {
+                await saveSettingsNow();
+                setStatus('设置已保存', 'ok');
+            } catch (error) {
+                console.warn(`[${PLUGIN_ID}] force settings save failed`, error);
+                setStatus(`保存失败：${error.message}`, 'error');
+            }
+            return;
+        }
         if (action === 'cancel') {
             requestController?.abort();
             closeActiveModal(null);
