@@ -252,6 +252,7 @@
     let tavernSettingsPromise = null;
     let hydratedSettings = false;
     let activeModalCleanup = null;
+    let settingsSaveTimer = null;
 
     const clone = value => JSON.parse(JSON.stringify(value));
     const tableKeys = () => Object.keys(settings?.tableDefinitions || DEFAULT_SETTINGS.tableDefinitions);
@@ -397,12 +398,12 @@
         return true;
     }
 
-    function applySchemePreset(name) {
+    function applySchemePreset(name, { includeAuto = false } = {}) {
         const preset = settings.schemePresets.find(item => item.name === name);
         if (!preset) return false;
         settings.prompts = { ...settings.prompts, ...clone(preset.prompts || {}) };
         settings.tableDefinitions = clone(preset.tableDefinitions || settings.tableDefinitions);
-        settings.auto = { ...settings.auto, ...clone(preset.auto || {}) };
+        if (includeAuto) settings.auto = { ...settings.auto, ...clone(preset.auto || {}) };
         settings.activeSchemePreset = name;
         settings = mergeSettings(settings);
         return true;
@@ -469,9 +470,12 @@
         }
     }
 
-    function saveSettings() {
+    function createSettingsSnapshot() {
         settings._savedAt = Date.now();
-        const snapshot = clone(settings);
+        return clone(settings);
+    }
+
+    function writeSettingsSnapshot(snapshot, { tavern = true, immediate = false } = {}) {
         try {
             hostWindow.localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot));
             hostWindow.localStorage.setItem(PRESET_STORAGE_KEY, JSON.stringify({
@@ -487,17 +491,36 @@
             if (bag) bag[PLUGIN_ID] = snapshot;
             if (ctx?.extensionSettings) ctx.extensionSettings[PLUGIN_ID] = snapshot;
             if (ctx?.extension_settings) ctx.extension_settings[PLUGIN_ID] = snapshot;
-            const save = ctx?.saveSettingsDebounced || hostWindow.saveSettingsDebounced;
+            if (hostWindow.extension_settings) hostWindow.extension_settings[PLUGIN_ID] = snapshot;
+            const save = immediate
+                ? (ctx?.saveSettings || hostWindow.saveSettings || ctx?.saveSettingsDebounced || hostWindow.saveSettingsDebounced)
+                : (ctx?.saveSettingsDebounced || hostWindow.saveSettingsDebounced);
             if (typeof save === 'function') save();
         } catch (error) {
             console.warn(`[${PLUGIN_ID}] settings save failed`, error);
         }
-        persistTavernSettings(snapshot);
+        if (tavern) persistTavernSettings(snapshot);
+        return snapshot;
+    }
+
+    function saveSettings() {
+        return writeSettingsSnapshot(createSettingsSnapshot());
+    }
+
+    function queueSettingsSave() {
+        if (settingsSaveTimer) hostWindow.clearTimeout(settingsSaveTimer);
+        settingsSaveTimer = hostWindow.setTimeout(() => {
+            settingsSaveTimer = null;
+            saveSettings();
+        }, 350);
     }
 
     async function saveSettingsNow() {
-        saveSettings();
-        const snapshot = clone(settings);
+        if (settingsSaveTimer) {
+            hostWindow.clearTimeout(settingsSaveTimer);
+            settingsSaveTimer = null;
+        }
+        const snapshot = writeSettingsSnapshot(createSettingsSnapshot(), { tavern: false });
         const ctx = getContext();
         const bag = extensionSettingsBag(ctx);
         if (bag) bag[PLUGIN_ID] = snapshot;
@@ -527,7 +550,6 @@
         merged.apiPresets = mergePresetLists(stored.apiPresets, settings.apiPresets);
         merged.schemePresets = mergePresetLists(stored.schemePresets, settings.schemePresets);
         settings = merged;
-        applyActivePresets();
         saveSettings();
         if (mounted) render();
     }
@@ -1799,32 +1821,49 @@ ${allTablesText()}
         return `
             <section class="mc-section mc-overview">
                 <details class="mc-fold">
-                    <summary><span>常用设置</span><em>自动总结 / 楼层收纳 / 确认</em></summary>
-                    <div class="mc-compact-grid">
-                        <label class="mc-switch-label"><input data-mc-setting="auto.enabled" type="checkbox" ${settings.auto.enabled ? 'checked' : ''}><span>启用自动总结</span></label>
-                        <label>小总结每<input data-mc-setting="auto.smallEvery" type="number" min="1" value="${settings.auto.smallEvery}">楼</label>
-                        <label>大总结每<input data-mc-setting="auto.bigEvery" type="number" min="1" value="${settings.auto.bigEvery}">楼</label>
-                        <label>延迟<input data-mc-setting="auto.summaryDelay" type="number" min="0" value="${settings.auto.summaryDelay}">楼后启动总结</label>
-                        <label class="mc-check"><input data-mc-setting="auto.smallIncludeExisting" type="checkbox" ${settings.auto.smallIncludeExisting ? 'checked' : ''}>小总结时发送已有小总结</label>
-                        <label class="mc-check"><input data-mc-setting="auto.excludeHidden" type="checkbox" ${settings.auto.excludeHidden ? 'checked' : ''}>跳过已隐藏楼层</label>
-                        <label class="mc-check"><input data-mc-setting="auto.confirmBeforeRun" type="checkbox" ${settings.auto.confirmBeforeRun ? 'checked' : ''}>运行前询问</label>
-                        <label class="mc-check"><input data-mc-setting="auto.confirmBeforeWrite" type="checkbox" ${settings.auto.confirmBeforeWrite ? 'checked' : ''}>写入前询问</label>
-                        <label class="mc-wide-setting">排除标签<input data-mc-setting="auto.excludeTags" value="${esc(settings.auto.excludeTags)}" placeholder="thinking, status"></label>
-                    </div>
-                    <div class="mc-mode-picker mc-archive-picker">
-                        <span class="mc-field-caption">楼层收纳</span>
-                        <label class="${archiveMode === 'off' ? 'is-selected' : ''}">
-                            <input data-mc-setting="auto.archiveMode" type="radio" name="memory-cat-archive-mode" value="off" ${archiveMode === 'off' ? 'checked' : ''}>
-                            <strong>不自动隐藏</strong><small>只过滤已手动隐藏楼层</small>
-                        </label>
-                        <label class="${archiveMode === 'keepRecent' ? 'is-selected' : ''}">
-                            <input data-mc-setting="auto.archiveMode" type="radio" name="memory-cat-archive-mode" value="keepRecent" ${archiveMode === 'keepRecent' ? 'checked' : ''}>
-                            <strong>保留最近楼层</strong><small>超过数量后隐藏旧可见楼层</small>
-                        </label>
-                        <label class="${archiveMode === 'afterSummary' ? 'is-selected' : ''}">
-                            <input data-mc-setting="auto.archiveMode" type="radio" name="memory-cat-archive-mode" value="afterSummary" ${archiveMode === 'afterSummary' ? 'checked' : ''}>
-                            <strong>总结后隐藏</strong><small>总结保存后隐藏本次范围</small>
-                        </label>
+                    <summary><span>常用设置</span><em>总结频率 / 范围 / 收纳</em></summary>
+                    <div class="mc-common-settings">
+                        <section class="mc-setting-group">
+                            <div class="mc-setting-title">自动总结</div>
+                            <div class="mc-setting-grid">
+                                <label class="mc-check"><input data-mc-setting="auto.enabled" type="checkbox" ${settings.auto.enabled ? 'checked' : ''}>启用自动总结</label>
+                                <label>小总结间隔<input data-mc-setting="auto.smallEvery" type="number" min="1" value="${settings.auto.smallEvery}"><span>楼</span></label>
+                                <label>大总结间隔<input data-mc-setting="auto.bigEvery" type="number" min="1" value="${settings.auto.bigEvery}"><span>楼</span></label>
+                                <label>启动延迟<input data-mc-setting="auto.summaryDelay" type="number" min="0" value="${settings.auto.summaryDelay}"><span>楼</span></label>
+                            </div>
+                        </section>
+                        <section class="mc-setting-group">
+                            <div class="mc-setting-title">总结范围</div>
+                            <div class="mc-setting-grid">
+                                <label class="mc-check"><input data-mc-setting="auto.smallIncludeExisting" type="checkbox" ${settings.auto.smallIncludeExisting ? 'checked' : ''}>发送已有小总结</label>
+                                <label class="mc-check"><input data-mc-setting="auto.excludeHidden" type="checkbox" ${settings.auto.excludeHidden ? 'checked' : ''}>跳过已隐藏楼层</label>
+                                <label class="mc-wide-setting">排除标签<input data-mc-setting="auto.excludeTags" value="${esc(settings.auto.excludeTags)}" placeholder="thinking, status"></label>
+                            </div>
+                        </section>
+                        <section class="mc-setting-group">
+                            <div class="mc-setting-title">确认开关</div>
+                            <div class="mc-setting-grid">
+                                <label class="mc-check"><input data-mc-setting="auto.confirmBeforeRun" type="checkbox" ${settings.auto.confirmBeforeRun ? 'checked' : ''}>运行前询问</label>
+                                <label class="mc-check"><input data-mc-setting="auto.confirmBeforeWrite" type="checkbox" ${settings.auto.confirmBeforeWrite ? 'checked' : ''}>写入前询问</label>
+                            </div>
+                        </section>
+                        <section class="mc-setting-group">
+                            <div class="mc-setting-title">楼层收纳</div>
+                            <div class="mc-mode-picker mc-archive-picker">
+                                <label class="${archiveMode === 'off' ? 'is-selected' : ''}">
+                                    <input data-mc-setting="auto.archiveMode" type="radio" name="memory-cat-archive-mode" value="off" ${archiveMode === 'off' ? 'checked' : ''}>
+                                    <strong>不自动隐藏</strong><small>只过滤已手动隐藏楼层</small>
+                                </label>
+                                <label class="${archiveMode === 'keepRecent' ? 'is-selected' : ''}">
+                                    <input data-mc-setting="auto.archiveMode" type="radio" name="memory-cat-archive-mode" value="keepRecent" ${archiveMode === 'keepRecent' ? 'checked' : ''}>
+                                    <strong>保留最近楼层</strong><small>超过数量后隐藏旧可见楼层</small>
+                                </label>
+                                <label class="${archiveMode === 'afterSummary' ? 'is-selected' : ''}">
+                                    <input data-mc-setting="auto.archiveMode" type="radio" name="memory-cat-archive-mode" value="afterSummary" ${archiveMode === 'afterSummary' ? 'checked' : ''}>
+                                    <strong>总结后隐藏</strong><small>总结保存后隐藏本次范围</small>
+                                </label>
+                            </div>
+                        </section>
                     </div>
                     ${archiveMode === 'keepRecent' ? `
                         <div class="mc-action-row mc-tight-row">
@@ -2090,10 +2129,6 @@ ${allTablesText()}
             <nav class="mc-tabs">
                 ${Object.entries({ overview: '总览', library: '总结库', tables: '表格', variables: '变量', settings: '设置' }).map(([key, label]) => `<button class="${activeTab === key ? 'is-active' : ''}" data-mc-tab="${key}">${label}</button>`).join('')}
             </nav>
-            <div class="mc-save-strip">
-                <button class="mc-primary" data-mc-action="save-settings">保存设置</button>
-                <span>更改会自动暂存；点这里强制写入酒馆设置</span>
-            </div>
             ${tabs[activeTab] || tabs.overview}
         `;
         registerMacros();
@@ -2199,7 +2234,7 @@ ${allTablesText()}
             if (!target.value || !applySchemePreset(target.value)) return;
             saveSettings();
             render();
-            setStatus(`总结方案已自动读取：${target.value}`, 'ok');
+            setStatus(`总结方案已切换：${target.value}`, 'ok');
             return;
         }
         if (target.matches('[data-mc-setting]')) {
@@ -2231,7 +2266,7 @@ ${allTablesText()}
                 if (changed) setStatus(`保留楼层已同步 ${changed} 楼`, 'ok');
                 return;
             }
-            saveSettings();
+            queueSettingsSave();
             return;
         }
         if (target.matches('[data-mc-table-label]')) {
@@ -2239,7 +2274,7 @@ ${allTablesText()}
             const definition = settings.tableDefinitions[target.dataset.mcTableLabel];
             if (!definition) return;
             definition.label = target.value.trim() || definition.label;
-            saveSettings();
+            queueSettingsSave();
             refreshMacros();
             return;
         }
@@ -2253,7 +2288,7 @@ ${allTablesText()}
                 .filter(Boolean);
             if (!fields.includes('主键')) fields.unshift('主键');
             definition.fields = [...new Set(fields)];
-            saveSettings();
+            queueSettingsSave();
             refreshMacros();
             return;
         }
@@ -2447,7 +2482,7 @@ ${allTablesText()}
         }
         if (action === 'load-scheme-preset') {
             const name = hostDocument.querySelector('#memory-cat-scheme-preset-select')?.value;
-            if (!applySchemePreset(name)) return setStatus('没有选中总结方案', 'warn');
+            if (!applySchemePreset(name, { includeAuto: true })) return setStatus('没有选中总结方案', 'warn');
             saveSettings();
             render();
             setStatus('总结方案已读取', 'ok');

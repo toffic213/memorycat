@@ -395,29 +395,6 @@
     padding: 3px 7px;
 }
 
-#memory-cat-drawer .mc-save-strip {
-    position: sticky;
-    top: 34px;
-    z-index: 2;
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 7px 16px;
-    border-bottom: 1px solid var(--mc-line);
-    background: var(--mc-paper);
-    font-family: Arial, "Noto Sans SC", sans-serif;
-}
-
-#memory-cat-drawer .mc-save-strip button {
-    min-height: 27px;
-    padding-inline: 12px;
-}
-
-#memory-cat-drawer .mc-save-strip span {
-    color: var(--mc-soft-ink);
-    font-size: 0.68rem;
-}
-
 #memory-cat-drawer .mc-range {
     flex-wrap: wrap;
     justify-content: flex-start;
@@ -459,8 +436,7 @@
 #memory-cat-drawer .mc-fold {
     margin: 7px 0 9px;
     padding: 0;
-    border-top: 3px double var(--mc-heavy-line);
-    border-bottom: 1px solid var(--mc-line);
+    border-top: 1px solid var(--mc-heavy-line);
 }
 
 #memory-cat-drawer .mc-fold summary {
@@ -497,7 +473,7 @@
 #memory-cat-drawer .mc-compact-grid label {
     display: inline-flex;
     align-items: center;
-    justify-content: space-between;
+    justify-content: flex-start;
     gap: 5px;
     min-height: 24px;
     color: var(--mc-soft-ink);
@@ -516,6 +492,68 @@
 
 #memory-cat-drawer .mc-wide-setting input {
     min-width: 180px;
+}
+
+#memory-cat-drawer .mc-common-settings {
+    display: grid;
+    gap: 10px;
+    padding: 5px 0 8px;
+}
+
+#memory-cat-drawer .mc-setting-group {
+    padding: 10px;
+    border: 1px solid rgba(17, 17, 17, 0.16);
+    background: rgba(255, 255, 255, 0.24);
+}
+
+#memory-cat-drawer .mc-setting-title {
+    margin-bottom: 8px;
+    color: var(--mc-ink);
+    font-family: Arial, "Noto Sans SC", sans-serif;
+    font-size: 0.74rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+}
+
+#memory-cat-drawer .mc-setting-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(165px, 1fr));
+    gap: 8px;
+}
+
+#memory-cat-drawer .mc-setting-grid label {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 7px;
+    min-width: 0;
+    color: var(--mc-soft-ink);
+    font-family: Arial, "Noto Sans SC", sans-serif;
+    font-size: 0.7rem;
+}
+
+#memory-cat-drawer .mc-setting-grid label:not(.mc-check) {
+    display: grid;
+    grid-template-columns: minmax(72px, max-content) 72px auto;
+}
+
+#memory-cat-drawer .mc-setting-grid input[type="number"] {
+    width: 72px;
+    min-height: 24px;
+}
+
+#memory-cat-drawer .mc-setting-grid .mc-wide-setting {
+    grid-column: 1 / -1;
+    grid-template-columns: minmax(72px, max-content) minmax(180px, 1fr);
+}
+
+#memory-cat-drawer .mc-setting-grid .mc-wide-setting input {
+    min-width: 0;
+}
+
+#memory-cat-drawer .mc-common-settings .mc-archive-picker {
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    margin-top: 0;
 }
 
 #memory-cat-drawer .mc-log-panel {
@@ -1114,19 +1152,6 @@
         padding: 0 10px;
     }
 
-    #memory-cat-drawer .mc-save-strip {
-        top: 32px;
-        padding: 6px 12px;
-    }
-
-    #memory-cat-drawer .mc-save-strip span {
-        display: none;
-    }
-
-    #memory-cat-drawer .mc-save-strip button {
-        width: 100%;
-    }
-
     #memory-cat-drawer .mc-form-grid {
         grid-template-columns: repeat(2, minmax(0, 1fr));
         gap: 6px 7px;
@@ -1149,6 +1174,16 @@
 
     #memory-cat-drawer .mc-compact-grid .mc-wide-setting {
         grid-column: 1 / -1;
+    }
+
+    #memory-cat-drawer .mc-setting-grid,
+    #memory-cat-drawer .mc-common-settings .mc-archive-picker {
+        grid-template-columns: 1fr;
+    }
+
+    #memory-cat-drawer .mc-setting-grid label:not(.mc-check),
+    #memory-cat-drawer .mc-setting-grid .mc-wide-setting {
+        grid-template-columns: minmax(72px, max-content) minmax(0, 1fr) auto;
     }
 
     #memory-cat-drawer .mc-compact-grid label {
