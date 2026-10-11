@@ -255,6 +255,7 @@
     let hydratedSettings = false;
     let activeModalCleanup = null;
     let settingsSaveTimer = null;
+    const internalMessageUpdateIndexes = new Set();
 
     const clone = value => JSON.parse(JSON.stringify(value));
     const tableKeys = () => Object.keys(settings?.tableDefinitions || DEFAULT_SETTINGS.tableDefinitions);
@@ -686,8 +687,9 @@
         return tavernScriptPromise;
     }
 
-    async function refreshMessageDisplay(message, index) {
+    async function refreshMessageDisplay(message, index, { internal = false } = {}) {
         if (!message || !Number.isFinite(Number(index))) return;
+        const numericIndex = Number(index);
         const ctx = getContext();
         const module = await tavernScript();
         const sync = ctx?.syncMesToSwipe || hostWindow.syncMesToSwipe || module.syncMesToSwipe;
@@ -710,9 +712,14 @@
         try {
             const source = getEventSource();
             const types = getEventTypes();
-            await source?.emit?.(types.MESSAGE_UPDATED || 'message_updated', Number(index));
+            if (internal) internalMessageUpdateIndexes.add(numericIndex);
+            await source?.emit?.(types.MESSAGE_UPDATED || 'message_updated', numericIndex);
         } catch {
             // Some event emitters are sync-only or unavailable during reload.
+        } finally {
+            if (internal) {
+                hostWindow.setTimeout(() => internalMessageUpdateIndexes.delete(numericIndex), 0);
+            }
         }
     }
 
@@ -725,7 +732,7 @@
             message.swipes[message.swipe_id] = next;
         }
         addLog(`${reason}：楼层 ${index} 已刷新正文显示`, 'trim');
-        await refreshMessageDisplay(message, index);
+        await refreshMessageDisplay(message, index, { internal: true });
     }
 
     function processedMessageText(message, index, total) {
@@ -1087,6 +1094,7 @@
 
     async function rollbackRealtimeAfterMutation(eventValue, reason = 'message-mutation') {
         const index = mutationIndexFromEvent(eventValue);
+        if (internalMessageUpdateIndexes.has(index)) return;
         const rolledBack = await rollbackTableWritesFrom(index, reason);
         const clearedPending = clearPendingBatchFrom(index, reason);
         if (rolledBack || clearedPending) {
@@ -2731,7 +2739,7 @@ ${allTablesText()}
         if (!update) {
             const removed = cleanMessageObject(last, messageIndex, '新回复显示清理');
             if (removed) {
-                await refreshMessageDisplay(last, messageIndex);
+                await refreshMessageDisplay(last, messageIndex, { internal: true });
                 await saveChat();
                 if (mounted) render();
             }
@@ -2742,7 +2750,7 @@ ${allTablesText()}
             if (hostWindow.toastr) hostWindow.toastr.warning('记忆喵看到了实时填表片段，但格式无法写入；表格块已按设置隐藏并记入日志');
             const removed = cleanMessageObject(last, messageIndex, '无法写入后的显示清理');
             if (removed) {
-                await refreshMessageDisplay(last, messageIndex);
+                await refreshMessageDisplay(last, messageIndex, { internal: true });
                 await saveChat();
             }
             return;
