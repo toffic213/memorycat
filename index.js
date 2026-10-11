@@ -189,6 +189,8 @@
             smallEvery: 6,
             bigEvery: 24,
             summaryDelay: 0,
+            smallDelay: 0,
+            bigDelay: 0,
             smallIncludeExisting: true,
             tableEvery: 12,
             tableDelay: 0,
@@ -335,6 +337,8 @@
         next.auto.bigEvery = Math.max(1, Number(next.auto.bigEvery) || DEFAULT_SETTINGS.auto.bigEvery);
         next.auto.keepVisible = Math.max(1, Number(next.auto.keepVisible) || 40);
         next.auto.summaryDelay = Math.max(0, Number(next.auto.summaryDelay) || 0);
+        next.auto.smallDelay = Math.max(0, Number(raw.auto?.smallDelay ?? next.auto.summaryDelay) || 0);
+        next.auto.bigDelay = Math.max(0, Number(raw.auto?.bigDelay ?? next.auto.summaryDelay) || 0);
         next.auto.tableEvery = Math.max(1, Number(next.auto.tableEvery) || DEFAULT_SETTINGS.auto.tableEvery);
         next.auto.smallIncludeExisting = next.auto.smallIncludeExisting !== false;
         next.auto.tableDelay = Math.max(0, Number(next.auto.tableDelay) || 0);
@@ -566,6 +570,7 @@
             smallSegments: [],
             tables: { characters: [], items: [], world: [], mainlines: [], branches: [] },
             pendingBatch: '',
+            pendingBatchMeta: null,
             history: [],
             requestLogs: [],
             tableWrites: [],
@@ -588,6 +593,9 @@
             if (!Array.isArray(state.tables[key])) state.tables[key] = [];
         }
         state.pendingBatch = String(state.pendingBatch || '');
+        state.pendingBatchMeta = state.pendingBatchMeta && typeof state.pendingBatchMeta === 'object'
+            ? state.pendingBatchMeta
+            : null;
         state.history = Array.isArray(state.history) ? state.history : [];
         state.requestLogs = Array.isArray(state.requestLogs) ? state.requestLogs : [];
         state.tableWrites = Array.isArray(state.tableWrites) ? state.tableWrites : [];
@@ -614,6 +622,15 @@
 
     function messageText(message) {
         return String(message?.mes ?? message?.content ?? '').trim();
+    }
+
+    function textHash(value) {
+        let hash = 0;
+        const text = String(value || '');
+        for (let index = 0; index < text.length; index++) {
+            hash = ((hash << 5) - hash + text.charCodeAt(index)) | 0;
+        }
+        return String(hash);
     }
 
     function stripMemoryBlocks(value) {
@@ -1028,6 +1045,17 @@
         return removed;
     }
 
+    function clearPendingBatchFrom(startIndex, reason = 'chat-mutation') {
+        const state = chatState();
+        if (!state?.pendingBatch) return 0;
+        const pendingEnd = Number(state.pendingBatchMeta?.end ?? state.lastProcessed?.table ?? -1);
+        if (!Number.isFinite(pendingEnd) || pendingEnd < Number(startIndex)) return 0;
+        state.pendingBatch = '';
+        state.pendingBatchMeta = null;
+        addLog(`待确认填表已清理：${reason}，来源楼层 ${pendingEnd}`, 'rollback');
+        return 1;
+    }
+
     async function reconcileChatStateAfterMutation(startIndex, reason = 'chat-mutation') {
         const state = chatState();
         if (!state) return;
@@ -1035,13 +1063,42 @@
         const cutoff = Math.max(0, Math.min(Number(startIndex) || 0, length));
         const removedSummaries = trimSummariesFrom(cutoff);
         const rolledBackTables = await rollbackTableWritesFrom(cutoff, reason);
+        const clearedPending = clearPendingBatchFrom(cutoff, reason);
         const previousTablePointer = Number(state.lastProcessed.table || 0);
-        state.lastProcessed.table = Math.min(previousTablePointer, Math.max(0, length - 1));
-        if (removedSummaries || rolledBackTables || state.lastProcessed.table !== previousTablePointer) {
+        state.lastProcessed.table = Math.min(previousTablePointer, Math.max(0, cutoff - 1), Math.max(0, length - 1));
+        if (removedSummaries || rolledBackTables || clearedPending || state.lastProcessed.table !== previousTablePointer) {
             await saveChat();
             refreshMacros();
             if (mounted) render();
         }
+    }
+
+    function mutationIndexFromEvent(value) {
+        const messages = chatMessages();
+        if (Number.isInteger(value)) return Math.max(0, Math.min(value, Math.max(0, messages.length - 1)));
+        if (value && typeof value === 'object') {
+            for (const key of ['index', 'messageId', 'message_id', 'mesId', 'mes_id', 'id']) {
+                const number = Number(value[key]);
+                if (Number.isInteger(number)) return Math.max(0, Math.min(number, Math.max(0, messages.length - 1)));
+            }
+        }
+        return Math.max(0, messages.length - 1);
+    }
+
+    async function rollbackRealtimeAfterMutation(eventValue, reason = 'message-mutation') {
+        const index = mutationIndexFromEvent(eventValue);
+        const rolledBack = await rollbackTableWritesFrom(index, reason);
+        const clearedPending = clearPendingBatchFrom(index, reason);
+        if (rolledBack || clearedPending) {
+            const state = chatState();
+            if (state) {
+                state.lastProcessed.table = Math.min(Number(state.lastProcessed.table || 0), Math.max(0, index - 1));
+            }
+            await saveChat();
+            refreshMacros();
+            if (mounted) render();
+        }
+        scheduleRealtimeConsume(250);
     }
 
     function allTablesText() {
@@ -1534,9 +1591,11 @@ ${allTablesText()}
         const write = {
             id: Date.now() + Math.random(),
             at: new Date().toISOString(),
+            start: Number(meta.range?.start ?? meta.range?.end ?? chatMessages().length - 1),
             end: Number(meta.range?.end ?? chatMessages().length - 1),
             source: meta.source || 'unknown',
             mode: meta.mode || 'batch',
+            messageHash: meta.messageHash || '',
             changes: []
         };
         for (const update of updates) {
@@ -1572,6 +1631,14 @@ ${allTablesText()}
         if (!state) return 0;
         const preview = applyBatch(value, true);
         state.pendingBatch = extractMemory(value);
+        state.pendingBatchMeta = {
+            start: Number(range?.start ?? range?.end ?? chatMessages().length - 1),
+            end: Number(range?.end ?? chatMessages().length - 1),
+            source: 'auto',
+            mode: 'pending',
+            messageHash: textHash(stripMemoryBlocks(messageText(chatMessages()[Number(range?.end ?? chatMessages().length - 1)])).value),
+            createdAt: new Date().toISOString()
+        };
         state.lastProcessed.table = range?.end ?? state.lastProcessed.table;
         await saveChat();
         render();
@@ -1585,9 +1652,10 @@ ${allTablesText()}
         const preview = applyBatch(`<Memory>\n${state.pendingBatch}\n</Memory>`, false, {
             mode: 'pending',
             source: 'manual',
-            range: { end: state.lastProcessed.table }
+            range: { start: state.pendingBatchMeta?.start, end: state.pendingBatchMeta?.end ?? state.lastProcessed.table }
         });
             state.pendingBatch = '';
+            state.pendingBatchMeta = null;
             await saveChat();
             refreshMacros();
             render();
@@ -1827,8 +1895,9 @@ ${allTablesText()}
                             <div class="mc-setting-grid">
                                 <label class="mc-check mc-strong-setting"><input data-mc-setting="auto.enabled" type="checkbox" ${settings.auto.enabled ? 'checked' : ''}>启用自动总结</label>
                                 <label><span>小总结</span><input data-mc-setting="auto.smallEvery" type="number" min="1" value="${settings.auto.smallEvery}"><em>楼</em></label>
+                                <label><span>小延迟</span><input data-mc-setting="auto.smallDelay" type="number" min="0" value="${settings.auto.smallDelay}"><em>楼</em></label>
                                 <label><span>大总结</span><input data-mc-setting="auto.bigEvery" type="number" min="1" value="${settings.auto.bigEvery}"><em>楼</em></label>
-                                <label><span>延迟</span><input data-mc-setting="auto.summaryDelay" type="number" min="0" value="${settings.auto.summaryDelay}"><em>楼</em></label>
+                                <label><span>大延迟</span><input data-mc-setting="auto.bigDelay" type="number" min="0" value="${settings.auto.bigDelay}"><em>楼</em></label>
                             </div>
                         </section>
                         <section class="mc-setting-group">
@@ -2372,6 +2441,7 @@ ${allTablesText()}
             const state = chatState();
             if (!state?.pendingBatch || !hostWindow.confirm('丢弃这批待确认的表格更新？')) return;
             state.pendingBatch = '';
+            state.pendingBatchMeta = null;
             await saveChat();
             render();
             setStatus('已丢弃待确认更新', 'warn');
@@ -2638,12 +2708,30 @@ ${allTablesText()}
         if (messages.length < Math.max(0, Number(settings.auto.tableDelay) || 0)) return;
         const last = messages[messages.length - 1];
         if (!last || last.is_user) return;
+        const messageIndex = messages.length - 1;
         const value = messageText(last);
         const update = extractRealtimeUpdate(value);
+        const state = chatState();
+        const currentHash = textHash(value);
+        const sameRealtimeWrite = state?.tableWrites?.some(write =>
+            write.source === 'auto'
+            && write.mode === 'realtime'
+            && Number(write.end) === messageIndex
+            && write.messageHash === currentHash
+        );
+        const samePendingUpdate = Number(state?.pendingBatchMeta?.end) === messageIndex
+            && state.pendingBatchMeta?.messageHash === currentHash;
+        if (!sameRealtimeWrite && !samePendingUpdate) {
+            await rollbackTableWritesFrom(messageIndex, 'realtime-refresh');
+            const clearedPending = clearPendingBatchFrom(messageIndex, 'realtime-refresh');
+            if (clearedPending) await saveChat();
+        } else if (!update) {
+            return;
+        }
         if (!update) {
-            const removed = cleanMessageObject(last, messages.length - 1, '新回复显示清理');
+            const removed = cleanMessageObject(last, messageIndex, '新回复显示清理');
             if (removed) {
-                await refreshMessageDisplay(last, messages.length - 1);
+                await refreshMessageDisplay(last, messageIndex);
                 await saveChat();
                 if (mounted) render();
             }
@@ -2652,33 +2740,34 @@ ${allTablesText()}
         const preview = applyBatch(update.batch, true);
         if (!preview.length) {
             if (hostWindow.toastr) hostWindow.toastr.warning('记忆喵看到了实时填表片段，但格式无法写入；表格块已按设置隐藏并记入日志');
-            const removed = cleanMessageObject(last, messages.length - 1, '无法写入后的显示清理');
+            const removed = cleanMessageObject(last, messageIndex, '无法写入后的显示清理');
             if (removed) {
-                await refreshMessageDisplay(last, messages.length - 1);
+                await refreshMessageDisplay(last, messageIndex);
                 await saveChat();
             }
             return;
         }
-        await rollbackTableWritesFrom(messages.length - 1, 'same-floor-regenerate');
         if (settings.auto.autoApplyTable) {
             applyBatch(update.batch, false, {
                 mode: 'realtime',
                 source: 'auto',
-                range: { start: messages.length - 1, end: messages.length - 1 }
+                range: { start: messageIndex, end: messageIndex },
+                messageHash: textHash(update.cleaned)
             });
-            await replaceMessageText(last, messages.length - 1, update.cleaned, '实时填表写入后清理');
-            addLog(`实时填表写入：楼层 ${messages.length - 1} 写入 ${preview.length} 条，并隐藏表格块`, 'write');
+            chatState().lastProcessed.table = messageIndex;
+            await replaceMessageText(last, messageIndex, update.cleaned, '实时填表写入后清理');
+            addLog(`实时填表写入：楼层 ${messageIndex} 写入 ${preview.length} 条，并隐藏表格块`, 'write');
             await saveChat();
             refreshMacros();
             if (hostWindow.toastr) hostWindow.toastr.info(`记忆喵已写入 ${preview.length} 条实时表格更新`);
         } else {
-            const count = await storePendingBatch(update.batch, { end: chatMessages().length - 1 });
+            const count = await storePendingBatch(update.batch, { start: messageIndex, end: messageIndex });
             if (!count) {
                 if (hostWindow.toastr) hostWindow.toastr.warning('记忆喵暂存实时填表失败，已保留在正文里');
                 return;
             }
-            await replaceMessageText(last, messages.length - 1, update.cleaned, '实时填表暂存后清理');
-            addLog(`实时填表暂存：楼层 ${messages.length - 1} 暂存 ${count} 条，并隐藏表格块`, 'write');
+            await replaceMessageText(last, messageIndex, update.cleaned, '实时填表暂存后清理');
+            addLog(`实时填表暂存：楼层 ${messageIndex} 暂存 ${count} 条，并隐藏表格块`, 'write');
             await saveChat();
             refreshMacros();
             if (hostWindow.toastr) hostWindow.toastr.info(`记忆喵发现 ${count} 条实时表格变更，已放入待确认区`);
@@ -2702,7 +2791,6 @@ ${allTablesText()}
         const length = chatMessages().length;
         if (!state || !length) return;
         normalizeSummaryPointers(state);
-        const summaryDelay = Math.max(0, Number(settings.auto.summaryDelay) || 0);
         const tableReady = length >= Math.max(0, Number(settings.auto.tableDelay) || 0);
         const pendingTable = length - Number(state.lastProcessed.table || 0);
         const since = value => {
@@ -2715,10 +2803,11 @@ ${allTablesText()}
             if (settings.auto.enabled) {
                 for (const task of ['small', 'big']) {
                     const interval = Math.max(1, Number(settings.auto[`${task}Every`]) || (task === 'small' ? 6 : 24));
+                    const delay = Math.max(0, Number(settings.auto[`${task}Delay`]) || 0);
                     while (true) {
                         const pointer = Number(state.lastProcessed[task] || 0);
                         const range = { start: since(pointer), end: since(pointer) + interval - 1 };
-                        if (chatMessages().length < range.end + 1 + summaryDelay) break;
+                        if (chatMessages().length < range.end + 1 + delay) break;
                         const succeeded = await summarize(task, { auto: true, skipArchive: true, range });
                         if (!succeeded) break;
                         summarizedRanges.push(range);
@@ -2764,9 +2853,9 @@ ${allTablesText()}
         const generationStopped = types.GENERATION_STOPPED || 'generation_stopped';
         source.on(received, onMessageReceived);
         source.on(rendered, () => scheduleRealtimeConsume(250));
-        source.on(updated, () => scheduleRealtimeConsume(250));
-        source.on(edited, () => scheduleRealtimeConsume(250));
-        source.on(swiped, () => scheduleRealtimeConsume(250));
+        source.on(updated, eventValue => rollbackRealtimeAfterMutation(eventValue, 'message-updated'));
+        source.on(edited, eventValue => rollbackRealtimeAfterMutation(eventValue, 'message-edited'));
+        source.on(swiped, eventValue => rollbackRealtimeAfterMutation(eventValue, 'message-swiped'));
         source.on(deleted, async newLength => {
             await reconcileChatStateAfterMutation(newLength, 'message-delete');
         });
